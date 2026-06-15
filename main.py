@@ -1,5 +1,5 @@
 """
-Pomodoro Timer - Dual Animation (nearest + LURD) - Fixed Final
+Pomodoro Timer - Dual Animation (nearest + LURD) with Sound
 """
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -229,6 +229,79 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
     
     <script>
+        // ============================================
+        // Sound System
+        // ============================================
+        class SoundSystem {
+            constructor() {
+                this.audioCtx = null;
+                this.enabled = true;
+            }
+            
+            init() {
+                try {
+                    this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                } catch(e) {
+                    console.log('Web Audio API not supported');
+                    this.enabled = false;
+                }
+            }
+            
+            playBeep(frequency = 800, duration = 200, type = 'sine', volume = 0.3) {
+                if (!this.enabled || !this.audioCtx) return;
+                
+                // Возобновляем контекст если он приостановлен
+                if (this.audioCtx.state === 'suspended') {
+                    this.audioCtx.resume();
+                }
+                
+                const oscillator = this.audioCtx.createOscillator();
+                const gainNode = this.audioCtx.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(this.audioCtx.destination);
+                
+                oscillator.type = type;
+                oscillator.frequency.setValueAtTime(frequency, this.audioCtx.currentTime);
+                
+                // Плавное затухание
+                gainNode.gain.setValueAtTime(volume, this.audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, this.audioCtx.currentTime + duration / 1000);
+                
+                oscillator.start(this.audioCtx.currentTime);
+                oscillator.stop(this.audioCtx.currentTime + duration / 1000);
+            }
+            
+            playTickSound() {
+                // Короткий тик для смены цифр
+                this.playBeep(1000, 50, 'sine', 0.1);
+            }
+            
+            playPhaseChangeSound() {
+                // Мелодия при смене фазы
+                this.playBeep(523, 150, 'sine', 0.3); // До
+                setTimeout(() => this.playBeep(659, 150, 'sine', 0.3), 150); // Ми
+                setTimeout(() => this.playBeep(784, 300, 'sine', 0.3), 300); // Соль
+            }
+            
+            playStartSound() {
+                // Восходящий звук при старте
+                this.playBeep(400, 100, 'sine', 0.2);
+                setTimeout(() => this.playBeep(600, 100, 'sine', 0.2), 100);
+                setTimeout(() => this.playBeep(800, 150, 'sine', 0.3), 200);
+            }
+            
+            playStopSound() {
+                // Нисходящий звук при остановке
+                this.playBeep(600, 100, 'sine', 0.2);
+                setTimeout(() => this.playBeep(400, 100, 'sine', 0.2), 100);
+                setTimeout(() => this.playBeep(200, 150, 'sine', 0.2), 200);
+            }
+        }
+        
+        // ============================================
+        // Animated Display
+        // ============================================
         class AnimatedDisplay {
             constructor(canvasId) {
                 this.canvas = document.getElementById(canvasId);
@@ -308,14 +381,13 @@ HTML_CONTENT = """<!DOCTYPE html>
             convertToCanvas(point, pos) {
                 return {
                     x: pos.x + point[0] * this.scale,
-                    y: pos.y + (5.5 - point[1]) * this.scale  // ИНВЕРСИЯ ЗДЕСЬ
+                    y: pos.y + (5.5 - point[1]) * this.scale
                 };
             }
             
-            // Углы матрицы цифры для LURD
-            getLURDCorners(pos) {
-                const matrixWidth = 2.5 * this.scale;   // ширина матрицы
-                const matrixHeight = 5.5 * this.scale;  // высота матрицы
+            getCorners(pos) {
+                const matrixWidth = 2.5 * this.scale;
+                const matrixHeight = 5.5 * this.scale;
                 
                 return {
                     topLeft: { x: pos.x, y: pos.y },
@@ -328,18 +400,16 @@ HTML_CONTENT = """<!DOCTYPE html>
                 if (!pos) return;
                 
                 const toCoords = toPoints.map(p => this.convertToCanvas(p, pos));
-                const corners = this.getLURDCorners(pos);
+                const corners = this.getCorners(pos);
                 
                 let fromCoords;
                 if (!fromPoints || fromPoints.length === 0) {
                     if (this.animType === 'lurd') {
-                        // LURD: из левого верхнего угла матрицы
                         fromCoords = toCoords.map(() => ({
                             x: corners.topLeft.x,
                             y: corners.topLeft.y
                         }));
                     } else {
-                        // nearest: из центра матрицы
                         const cx = pos.x + 1.25 * this.scale;
                         const cy = pos.y + 2.75 * this.scale;
                         fromCoords = toCoords.map(() => ({
@@ -388,6 +458,8 @@ HTML_CONTENT = """<!DOCTYPE html>
                         this.animType = this.animType === 'nearest' ? 'lurd' : 'nearest';
                     }
                 }
+                
+                return hasChanges;
             }
             
             animate() {
@@ -397,7 +469,6 @@ HTML_CONTENT = """<!DOCTYPE html>
                 const now = performance.now();
                 const activePositions = new Set(this.animations.map(a => a.position));
                 
-                // Статичные позиции
                 for (const [position, points] of Object.entries(this.currentPoints)) {
                     if (activePositions.has(position)) continue;
                     
@@ -410,7 +481,6 @@ HTML_CONTENT = """<!DOCTYPE html>
                     });
                 }
                 
-                // Анимации
                 this.animations = this.animations.filter(anim => {
                     const elapsed = now - anim.startTime;
                     const progress = Math.min(1, elapsed / anim.duration);
@@ -429,7 +499,6 @@ HTML_CONTENT = """<!DOCTYPE html>
                         let x, y, alpha, size = this.pointSize;
                         
                         if (i >= anim.fromCoords.length) {
-                            // Новая точка - БЕЗ пружины, плавное появление
                             const ap = Math.max(0, (progress - 0.1) / 0.9);
                             const eased = ap < 0.5 ? 2*ap*ap : 1 - (-2*ap + 2)**2 / 2;
                             
@@ -443,7 +512,6 @@ HTML_CONTENT = """<!DOCTYPE html>
                             alpha = eased;
                             size *= (0.5 + eased * 0.5);
                         } else if (i >= anim.toCoords.length) {
-                            // Лишняя точка уходит в правый нижний угол
                             const dp = Math.min(1, progress / 0.5);
                             
                             if (isLURD) {
@@ -456,7 +524,6 @@ HTML_CONTENT = """<!DOCTYPE html>
                             alpha = 1 - dp;
                             size *= (1 - dp * 0.5);
                         } else {
-                            // Нормальный переход
                             x = from.x + (to.x - from.x) * t;
                             y = from.y + (to.y - from.y) * t;
                             alpha = 1;
@@ -472,10 +539,19 @@ HTML_CONTENT = """<!DOCTYPE html>
             }
         }
         
+        // ============================================
+        // Main App
+        // ============================================
+        const sound = new SoundSystem();
         const display = new AnimatedDisplay('clockCanvas');
         let ws = null;
         let reconnectAttempts = 0;
         let previousDigits = {};
+        
+        // Инициализация звука при первом клике
+        document.addEventListener('click', () => {
+            sound.init();
+        }, { once: true });
         
         function connectWebSocket() {
             ws = new WebSocket(`ws://${window.location.host}/ws`);
@@ -492,7 +568,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                 
                 if (data.type === 'timer_update') {
                     if (data.display) {
-                        display.updateDisplay(data.display, true);
+                        const hasChanges = display.updateDisplay(data.display, true);
                         for (const [pos, info] of Object.entries(data.display)) {
                             previousDigits[pos] = info.digit;
                         }
@@ -533,6 +609,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                     updateButtons(data.state);
                     
                     if (data.phase_changed) {
+                        sound.playPhaseChangeSound();
                         showNotification(data.state === 'working' ? '🔔 Время работать!' : '🔔 Время отдыхать!');
                     }
                 }
@@ -556,7 +633,13 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
         
         function sendCommand(action) {
-            if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ action }));
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action }));
+                
+                // Звуки при нажатии кнопок
+                if (action === 'start') sound.playStartSound();
+                else if (action === 'stop') sound.playStopSound();
+            }
         }
         
         function updateSettings() {
@@ -778,7 +861,9 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 if __name__ == "__main__":
     import uvicorn
     print("=" * 50)
-    print("🍅 Pomodoro Timer - Dual Animation")
+    print("🍅 Pomodoro Timer - Dual Animation + Sound")
+    print("🎬 nearest ↔ LURD")
+    print("🔊 Sound effects enabled")
     print("=" * 50)
     print("Open: http://localhost:8000")
     print("=" * 50)
