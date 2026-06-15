@@ -1,5 +1,5 @@
 """
-Pomodoro Timer - Correct Display
+Pomodoro Timer - Dual Animation (nearest + LURD) - Fixed Final
 """
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -246,6 +246,9 @@ HTML_CONTENT = """<!DOCTYPE html>
                 this.currentPoints = {};
                 this.animations = [];
                 
+                this.changeCount = 0;
+                this.animType = 'nearest';
+                
                 this.clearCanvas();
                 this.drawColon();
                 this.animate();
@@ -302,13 +305,21 @@ HTML_CONTENT = """<!DOCTYPE html>
                 this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
             }
             
-            // Конвертация: backend шлет y от 0 (верх) до 5.5 (низ)
-            // Canvas: y увеличивается вниз
-            // Нужно перевернуть: 5.5 - y
             convertToCanvas(point, pos) {
                 return {
                     x: pos.x + point[0] * this.scale,
-                    y: pos.y + (5.5 - point[1]) * this.scale  // ВОТ ТУТ ИНВЕРСИЯ
+                    y: pos.y + (5.5 - point[1]) * this.scale  // ИНВЕРСИЯ ЗДЕСЬ
+                };
+            }
+            
+            // Углы матрицы цифры для LURD
+            getLURDCorners(pos) {
+                const matrixWidth = 2.5 * this.scale;   // ширина матрицы
+                const matrixHeight = 5.5 * this.scale;  // высота матрицы
+                
+                return {
+                    topLeft: { x: pos.x, y: pos.y },
+                    bottomRight: { x: pos.x + matrixWidth, y: pos.y + matrixHeight }
                 };
             }
             
@@ -317,15 +328,25 @@ HTML_CONTENT = """<!DOCTYPE html>
                 if (!pos) return;
                 
                 const toCoords = toPoints.map(p => this.convertToCanvas(p, pos));
+                const corners = this.getLURDCorners(pos);
                 
                 let fromCoords;
                 if (!fromPoints || fromPoints.length === 0) {
-                    const cx = pos.x + 2.5 * this.scale / 2;
-                    const cy = pos.y + 5.5 * this.scale / 2;
-                    fromCoords = toCoords.map(() => ({
-                        x: cx + (Math.random() - 0.5) * 20,
-                        y: cy + (Math.random() - 0.5) * 20
-                    }));
+                    if (this.animType === 'lurd') {
+                        // LURD: из левого верхнего угла матрицы
+                        fromCoords = toCoords.map(() => ({
+                            x: corners.topLeft.x,
+                            y: corners.topLeft.y
+                        }));
+                    } else {
+                        // nearest: из центра матрицы
+                        const cx = pos.x + 1.25 * this.scale;
+                        const cy = pos.y + 2.75 * this.scale;
+                        fromCoords = toCoords.map(() => ({
+                            x: cx + (Math.random() - 0.5) * 20,
+                            y: cy + (Math.random() - 0.5) * 20
+                        }));
+                    }
                 } else {
                     fromCoords = fromPoints.map(p => this.convertToCanvas(p, pos));
                 }
@@ -335,20 +356,37 @@ HTML_CONTENT = """<!DOCTYPE html>
                     position,
                     fromCoords,
                     toCoords,
+                    corners,
                     startTime: performance.now(),
-                    duration: 300 + Math.random() * 200
+                    duration: 400 + Math.random() * 200,
+                    animType: this.animType
                 });
             }
             
             updateDisplay(displayData, animate = true) {
+                let hasChanges = false;
+                
                 for (const [position, data] of Object.entries(displayData)) {
                     const newPoints = data.points || [];
                     
                     if (animate && this.currentPoints[position]) {
-                        this.animateTransition(position, this.currentPoints[position], newPoints);
+                        const oldStr = JSON.stringify(this.currentPoints[position]);
+                        const newStr = JSON.stringify(newPoints);
+                        if (oldStr !== newStr) {
+                            hasChanges = true;
+                            this.animateTransition(position, this.currentPoints[position], newPoints);
+                        }
                     }
                     
                     this.currentPoints[position] = newPoints;
+                }
+                
+                if (hasChanges) {
+                    this.changeCount++;
+                    if (this.changeCount >= 3) {
+                        this.changeCount = 0;
+                        this.animType = this.animType === 'nearest' ? 'lurd' : 'nearest';
+                    }
                 }
             }
             
@@ -372,13 +410,14 @@ HTML_CONTENT = """<!DOCTYPE html>
                     });
                 }
                 
-                // Анимируемые позиции
+                // Анимации
                 this.animations = this.animations.filter(anim => {
                     const elapsed = now - anim.startTime;
                     const progress = Math.min(1, elapsed / anim.duration);
                     const t = progress < 0.5 ? 4*progress**3 : 1 - (-2*progress + 2)**3 / 2;
                     
                     const maxPoints = Math.max(anim.fromCoords.length, anim.toCoords.length);
+                    const isLURD = anim.animType === 'lurd';
                     
                     for (let i = 0; i < maxPoints; i++) {
                         const fi = Math.min(i, anim.fromCoords.length - 1);
@@ -390,17 +429,34 @@ HTML_CONTENT = """<!DOCTYPE html>
                         let x, y, alpha, size = this.pointSize;
                         
                         if (i >= anim.fromCoords.length) {
-                            const ap = Math.max(0, (progress - 0.3) / 0.7);
-                            const st = 1 - (1-ap)**3 * Math.cos(ap * Math.PI * 3);
-                            x = to.x; y = to.y;
-                            alpha = st;
-                            size *= (0.5 + st * 0.5);
+                            // Новая точка - БЕЗ пружины, плавное появление
+                            const ap = Math.max(0, (progress - 0.1) / 0.9);
+                            const eased = ap < 0.5 ? 2*ap*ap : 1 - (-2*ap + 2)**2 / 2;
+                            
+                            if (isLURD) {
+                                x = anim.corners.topLeft.x + (to.x - anim.corners.topLeft.x) * eased;
+                                y = anim.corners.topLeft.y + (to.y - anim.corners.topLeft.y) * eased;
+                            } else {
+                                x = to.x;
+                                y = to.y;
+                            }
+                            alpha = eased;
+                            size *= (0.5 + eased * 0.5);
                         } else if (i >= anim.toCoords.length) {
-                            const dp = Math.min(1, progress / 0.3);
-                            x = from.x + (to.x - from.x) * dp;
-                            y = from.y + (to.y - from.y) * dp;
+                            // Лишняя точка уходит в правый нижний угол
+                            const dp = Math.min(1, progress / 0.5);
+                            
+                            if (isLURD) {
+                                x = from.x + (anim.corners.bottomRight.x - from.x) * dp;
+                                y = from.y + (anim.corners.bottomRight.y - from.y) * dp;
+                            } else {
+                                x = from.x + (to.x - from.x) * dp;
+                                y = from.y + (to.y - from.y) * dp;
+                            }
                             alpha = 1 - dp;
+                            size *= (1 - dp * 0.5);
                         } else {
+                            // Нормальный переход
                             x = from.x + (to.x - from.x) * t;
                             y = from.y + (to.y - from.y) * t;
                             alpha = 1;
@@ -435,15 +491,8 @@ HTML_CONTENT = """<!DOCTYPE html>
                 const data = JSON.parse(event.data);
                 
                 if (data.type === 'timer_update') {
-                    let hasChanges = false;
                     if (data.display) {
-                        for (const [pos, info] of Object.entries(data.display)) {
-                            if (previousDigits[pos] !== info.digit) {
-                                hasChanges = true;
-                                break;
-                            }
-                        }
-                        display.updateDisplay(data.display, hasChanges);
+                        display.updateDisplay(data.display, true);
                         for (const [pos, info] of Object.entries(data.display)) {
                             previousDigits[pos] = info.digit;
                         }
@@ -614,7 +663,6 @@ class DigitRenderer:
         for y in range(11):
             for x in range(5):
                 if self.digits.get(digit, [[0]*5]*11)[y][x]:
-                    # ИНВЕРСИЯ ЗДЕСЬ: 10-y чтобы верх матрицы был верхом на экране
                     coords.append([x * 0.5, (10 - y) * 0.5])
         return coords
     
@@ -730,9 +778,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 if __name__ == "__main__":
     import uvicorn
     print("=" * 50)
-    print("🍅 Pomodoro Timer Starting...")
+    print("🍅 Pomodoro Timer - Dual Animation")
     print("=" * 50)
-    print("Open your browser at: http://localhost:8000")
-    print("Press Ctrl+C to stop")
+    print("Open: http://localhost:8000")
     print("=" * 50)
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
