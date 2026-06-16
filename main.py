@@ -27,6 +27,7 @@ class PomodoroTimer:
         self.start_t = None
         self.sessions = 0
         self.is_work = True
+        self.paused_state = None
     
     def start(self):
         if self.state == "stopped":
@@ -34,12 +35,17 @@ class PomodoroTimer:
             self.remaining = self.work_dur
             self.is_work = True
         elif self.state == "paused":
-            self.state = "working"
+            if self.paused_state:
+                self.state = self.paused_state
+            else:
+                self.state = "working"
+            self.paused_state = None
         self.start_t = time.time()
     
     def pause(self):
         if self.state in ["working", "break"]:
             self.remaining = max(0, self.remaining - (time.time() - self.start_t))
+            self.paused_state = self.state
             self.state = "paused"
     
     def stop(self):
@@ -47,6 +53,7 @@ class PomodoroTimer:
         self.remaining = self.work_dur
         self.start_t = None
         self.is_work = True
+        self.paused_state = None
     
     def get_remaining(self):
         if self.state == "stopped":
@@ -54,6 +61,16 @@ class PomodoroTimer:
         if self.state == "paused":
             return self.remaining
         return max(0, self.remaining - (time.time() - self.start_t))
+    
+    def get_total_duration(self):
+        """Возвращает общую длительность текущего режима"""
+        if self.state == "working":
+            return self.work_dur
+        elif self.state == "break":
+            return self.long_break if self.sessions % 4 == 0 else self.break_dur
+        elif self.paused_state == "break":
+            return self.long_break if self.sessions % 4 == 0 else self.break_dur
+        return self.work_dur
     
     def update(self):
         if self.state in ["working", "break"]:
@@ -91,18 +108,22 @@ async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()
     
     m, s = timer.get_time()
+    total_dur = timer.get_total_duration()
+    
     await websocket.send_json({
         "type": "timer_update",
         "minutes": m,
         "seconds": s,
         "state": timer.state,
         "sessions": timer.sessions,
-        "phase_changed": False
+        "phase_changed": False,
+        "total_duration": total_dur
     })
     
     last_minutes = m
     last_seconds = s
     last_state = timer.state
+    last_total_duration = total_dur
     
     try:
         while True:
@@ -126,9 +147,11 @@ async def ws_endpoint(websocket: WebSocket):
             
             changed = timer.update()
             m, s = timer.get_time()
+            total_dur = timer.get_total_duration()
             
             if (m != last_minutes or s != last_seconds or 
-                timer.state != last_state or changed):
+                timer.state != last_state or changed or
+                total_dur != last_total_duration):
                 
                 await websocket.send_json({
                     "type": "timer_update",
@@ -136,12 +159,14 @@ async def ws_endpoint(websocket: WebSocket):
                     "seconds": s,
                     "state": timer.state,
                     "sessions": timer.sessions,
-                    "phase_changed": changed
+                    "phase_changed": changed,
+                    "total_duration": total_dur
                 })
                 
                 last_minutes = m
                 last_seconds = s
                 last_state = timer.state
+                last_total_duration = total_dur
             
             await asyncio.sleep(0.05)
     except WebSocketDisconnect:

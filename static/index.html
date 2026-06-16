@@ -190,6 +190,33 @@
         class DigitRenderer {
             constructor() {
                 this.digits = this._createDigits();
+                this.colon = this._createColon();
+            }
+            _createColon() {
+                // Матрица 5x11 для двоеточия (как цифра)
+                const matrix = [];
+                for (let y = 0; y < 11; y++) {
+                    matrix[y] = [0, 0, 0, 0, 0];
+                }
+                // Верхняя точка: колонка 2, строки 2-3
+                matrix[2][2] = 1;
+                matrix[3][2] = 1;
+                // Нижняя точка: колонка 2, строки 7-8
+                matrix[7][2] = 1;
+                matrix[8][2] = 1;
+                return matrix;
+            }
+
+            getColonCoords() {
+                const coords = [];
+                for (let y = 0; y < 11; y++) {
+                    for (let x = 0; x < 5; x++) {
+                        if (this.colon[y][x]) {
+                            coords.push([x * 0.5, (10 - y) * 0.5]);
+                        }
+                    }
+                }
+                return coords;
             }
             
             _createDigits() {
@@ -362,20 +389,35 @@
                 this.ctx = this.canvas.getContext('2d');
                 this.pointSize = 8;
                 this.scale = 28;
+                
+                const canvasWidth = 650;
+                const canvasHeight = 220;
+                const digitWidth = 2.5 * this.scale;   // 70px
+                const digitHeight = 5.5 * this.scale;  // 154px
+                const colonWidth = 2.5 * this.scale;   // такая же ширина как цифра
+                
+                // 4 цифры + двоеточие + 4 промежутка
+                const totalWidth = digitWidth * 4 + colonWidth + 20 * 4;
+                const startX = (canvasWidth - totalWidth) / 2;
+                const centerY = (canvasHeight - digitHeight) / 2 + 25;
+                
                 this.positions = {
-                    minutes_tens: { x: 85, y: 55 },
-                    minutes_ones: { x: 175, y: 55 },
-                    seconds_tens: { x: 340, y: 55 },
-                    seconds_ones: { x: 430, y: 55 }
+                    minutes_tens: { x: startX, y: centerY },
+                    minutes_ones: { x: startX + digitWidth + 20, y: centerY },
+                    colon:         { x: startX + (digitWidth + 20) * 2, y: centerY },
+                    seconds_tens: { x: startX + (digitWidth + 20) * 2 + colonWidth + 20, y: centerY },
+                    seconds_ones: { x: startX + (digitWidth + 20) * 3 + colonWidth + 20, y: centerY }
                 };
+                
                 this.currentPoints = {};
+                this.colonPoints = digitRenderer.getColonCoords();  // Точки двоеточия
                 this.animations = [];
                 this.changeCount = 0;
                 this.animType = 'nearest';
                 
                 this.colorScheme = {
                     primary: '#00ffcc',
-                    glow: 'rgba(0, 255, 204, 0.6)',
+                    glow: 'rgba(0, 255, 204, 0.8)',
                     bar: '#00ffcc'
                 };
                 
@@ -390,29 +432,31 @@
                 switch(mode) {
                     case 'working':
                         this.colorScheme = {
-                            primary: '#ff6347',
-                            glow: 'rgba(255, 99, 71, 0.6)',
-                            bar: '#ff6347'
+                            //primary: '#ff2d1a',      // Ярко-красный неоновый
+                            primary: '#f9b159',      // оранжевый
+                            glow: 'rgba(249, 177, 89, 0.7)',
+                            bar: '#f9b159'
                         };
                         break;
                     case 'break':
                         this.colorScheme = {
-                            primary: '#4caf50',
-                            glow: 'rgba(76, 175, 80, 0.6)',
-                            bar: '#4caf50'
+                            //primary: '#00e676',      // Ярко-зелёный неоновый
+                            primary: '#59f9b1',      // зелёный
+                            glow: 'rgba(89, 249, 177, 0.7)',
+                            bar: '#59f9b1'
                         };
                         break;
                     case 'paused':
                         this.colorScheme = {
-                            primary: '#ffcc00',
-                            glow: 'rgba(255, 204, 0, 0.6)',
-                            bar: '#ffcc00'
+                            primary: '#f1f959',
+                            glow: 'rgba(241, 249, 89, 0.8)',
+                            bar: '#f1f959'
                         };
                         break;
                     default:
                         this.colorScheme = {
                             primary: '#00ffcc',
-                            glow: 'rgba(0, 255, 204, 0.6)',
+                            glow: 'rgba(0, 255, 204, 0.8)',
                             bar: '#00ffcc'
                         };
                 }
@@ -471,22 +515,13 @@
             }
             
             drawColon() {
-                const ctx = this.ctx;
-                ctx.shadowBlur = 15;
-                ctx.shadowColor = this.colorScheme.glow;
+                const pos = this.positions.colon;
+                if (!pos) return;
                 
-                [75, 120].forEach(y => {
-                    const gradient = ctx.createRadialGradient(300, y, 0, 300, y, 8);
-                    gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
-                    gradient.addColorStop(0.5, this.colorScheme.primary);
-                    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-                    ctx.fillStyle = gradient;
-                    ctx.beginPath();
-                    ctx.arc(300, y, 8, 0, Math.PI * 2);
-                    ctx.fill();
+                this.colonPoints.forEach(point => {
+                    const c = this.convertToCanvas(point, pos);
+                    this.drawPoint(c.x, c.y, 1);
                 });
-                
-                ctx.shadowBlur = 0;
             }
             
             clearCanvas() {
@@ -552,6 +587,8 @@
                 let hasChanges = false;
                 
                 for (const [position, data] of Object.entries(displayData)) {
+                    if (position === 'colon') continue;  // Пропускаем двоеточие
+                    
                     const newPoints = data.points || [];
                     
                     if (animate && this.currentPoints[position]) {
@@ -695,7 +732,6 @@
                 if (data.type === 'timer_update') {
                     const displayData = digitRenderer.getDisplay(data.minutes, data.seconds);
                     
-                    // Всегда обновляем цвет при изменении состояния
                     if (data.state !== currentState) {
                         currentState = data.state;
                         display.setColorScheme(data.state);
@@ -708,10 +744,11 @@
                     const modeEl = document.getElementById('modeIndicator');
                     const progressFill = document.getElementById('progressFill');
                     
-                    const totalDuration = data.state === 'working' ? 1500 :
-                                        data.sessions % 4 === 0 ? 900 : 300;
+                    // Используем total_duration с сервера
+                    const totalDuration = data.total_duration || 1500;
                     const remaining = data.minutes * 60 + data.seconds;
-                    progressFill.style.width = `${Math.min(100, Math.max(0, ((totalDuration - remaining) / totalDuration) * 100))}%`;
+                    const progress = Math.min(100, Math.max(0, ((totalDuration - remaining) / totalDuration) * 100));
+                    progressFill.style.width = `${progress}%`;
                     
                     switch(data.state) {
                         case 'working':
