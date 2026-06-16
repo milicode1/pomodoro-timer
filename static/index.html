@@ -410,6 +410,7 @@
                 };
                 
                 this.currentPoints = {};
+                this.currentDigits = {};  // Храним digit для быстрого сравнения
                 this.colonPoints = digitRenderer.getColonCoords();  // Точки двоеточия
                 this.animations = [];
                 this.changeCount = 0;
@@ -587,21 +588,25 @@
                 let hasChanges = false;
                 
                 for (const [position, data] of Object.entries(displayData)) {
-                    if (position === 'colon') continue;  // Пропускаем двоеточие
+                    if (position === 'colon') continue;
                     
+                    const newDigit = data.digit;
                     const newPoints = data.points || [];
                     
                     if (animate && this.currentPoints[position]) {
-                        const oldStr = JSON.stringify(this.currentPoints[position]);
-                        const newStr = JSON.stringify(newPoints);
-                        
-                        if (oldStr !== newStr) {
+                        // Сравниваем digit (число), а не массивы точек через JSON
+                        if (this.currentDigits[position] !== newDigit) {
                             hasChanges = true;
-                            this.animateTransition(position, this.currentPoints[position], newPoints);
+                            this.animateTransition(
+                                position, 
+                                this.currentPoints[position], 
+                                newPoints
+                            );
                         }
                     }
                     
                     this.currentPoints[position] = newPoints;
+                    this.currentDigits[position] = newDigit;
                 }
                 
                 if (hasChanges) {
