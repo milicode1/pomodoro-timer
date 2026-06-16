@@ -1,8 +1,8 @@
 """
-Pomodoro Timer - OPTIMIZED VERSION
-✅ Событийная модель вместо polling
-✅ Нулевая нагрузка в простое
-✅ Масштабируется на 1000+ клиентов
+Pomodoro Timer - MULTIUSER (до 20 человек)
+✅ Каждому пользователю — свой персональный таймер
+✅ Без комнат — у каждого свой независимый таймер
+✅ Событийная модель
 """
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -13,14 +13,18 @@ import json
 import time
 import os
 
-app = FastAPI(title="Pomodoro Timer")
+app = FastAPI(title="Pomodoro Timer - MultiUser")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
+MAX_CLIENTS = 20
+active_clients = set()
 
-class PomodoroTimer:
+
+class PersonalTimer:
+    """Персональный таймер для одного пользователя"""
     def __init__(self):
         self.work_dur = 1500
         self.break_dur = 300
@@ -61,6 +65,12 @@ class PomodoroTimer:
         self.is_work = True
         self.paused_state = None
         self._notify()
+    
+    def set_duration(self, minutes: int):
+        self.work_dur = minutes * 60
+        if self.state == "stopped":
+            self.remaining = self.work_dur
+            self._notify()
     
     def get_remaining(self):
         if self.state == "stopped":
@@ -104,17 +114,13 @@ class PomodoroTimer:
         self._event.clear()
     
     def get_sleep_time(self):
-        """Возвращает время сна для wait_for_update"""
         if self.state in ["working", "break"]:
             remaining = self.get_remaining()
             next_tick = remaining - int(remaining)
             if next_tick <= 0:
                 next_tick = 1.0
             return next_tick
-        return None  # Бесконечное ожидание
-
-
-timer = PomodoroTimer()
+        return None
 
 
 @app.get("/")
@@ -124,9 +130,28 @@ async def root():
         return HTMLResponse(content=f.read())
 
 
+@app.get("/api/stats")
+async def stats():
+    return {"active_users": len(active_clients), "max_users": MAX_CLIENTS}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
+    # Проверяем лимит
+    if len(active_clients) >= MAX_CLIENTS:
+        await websocket.accept()
+        await websocket.send_json({
+            "type": "error",
+            "message": f"Сервер заполнен (максимум {MAX_CLIENTS} человек)"
+        })
+        await websocket.close()
+        return
+    
     await websocket.accept()
+    active_clients.add(websocket)
+    
+    # Персональный таймер для этого пользователя
+    timer = PersonalTimer()
     
     # Отправляем начальное состояние
     m, s = timer.get_time()
@@ -139,7 +164,8 @@ async def ws_endpoint(websocket: WebSocket):
         "state": timer.state,
         "sessions": timer.sessions,
         "phase_changed": False,
-        "total_duration": total_dur
+        "total_duration": total_dur,
+        "online": len(active_clients)
     })
     
     last_minutes = m
@@ -147,51 +173,53 @@ async def ws_endpoint(websocket: WebSocket):
     last_state = timer.state
     last_total_duration = total_dur
     
-    # Задача для периодического обновления времени
+    # Фоновая задача для таймера
     async def timer_task():
         nonlocal last_minutes, last_seconds, last_state, last_total_duration
         
-        while True:
-            sleep_time = timer.get_sleep_time()
-            if sleep_time is not None:
-                try:
-                    await asyncio.wait_for(timer._event.wait(), timeout=sleep_time)
-                except asyncio.TimeoutError:
-                    pass
-            else:
-                await timer._event.wait()
-            
-            changed = timer.update()
-            m, s = timer.get_time()
-            total_dur = timer.get_total_duration()
-            
-            if (m != last_minutes or s != last_seconds or 
-                timer.state != last_state or changed or
-                total_dur != last_total_duration):
+        try:
+            while True:
+                sleep_time = timer.get_sleep_time()
+                if sleep_time is not None:
+                    try:
+                        await asyncio.wait_for(timer._event.wait(), timeout=sleep_time)
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    await timer._event.wait()
                 
-                try:
-                    await websocket.send_json({
-                        "type": "timer_update",
-                        "minutes": m,
-                        "seconds": s,
-                        "state": timer.state,
-                        "sessions": timer.sessions,
-                        "phase_changed": changed,
-                        "total_duration": total_dur
-                    })
+                changed = timer.update()
+                m, s = timer.get_time()
+                total_dur = timer.get_total_duration()
+                
+                if (m != last_minutes or s != last_seconds or 
+                    timer.state != last_state or changed or
+                    total_dur != last_total_duration):
                     
-                    last_minutes = m
-                    last_seconds = s
-                    last_state = timer.state
-                    last_total_duration = total_dur
-                except:
-                    break
+                    try:
+                        await websocket.send_json({
+                            "type": "timer_update",
+                            "minutes": m,
+                            "seconds": s,
+                            "state": timer.state,
+                            "sessions": timer.sessions,
+                            "phase_changed": changed,
+                            "total_duration": total_dur,
+                            "online": len(active_clients)
+                        })
+                        
+                        last_minutes = m
+                        last_seconds = s
+                        last_state = timer.state
+                        last_total_duration = total_dur
+                    except:
+                        break
+        except asyncio.CancelledError:
+            pass
     
-    # Запускаем таймер в фоне
     task = asyncio.create_task(timer_task())
     
     try:
-        # Принимаем команды от клиента
         while True:
             try:
                 data = await websocket.receive_text()
@@ -205,10 +233,8 @@ async def ws_endpoint(websocket: WebSocket):
                 elif action == "stop":
                     timer.stop()
                 elif action == "set_duration":
-                    timer.work_dur = cmd.get("duration", 25) * 60
-                    if timer.state == "stopped":
-                        timer.remaining = timer.work_dur
-                        timer._notify()
+                    timer.set_duration(cmd.get("duration", 25))
+                    
             except WebSocketDisconnect:
                 break
     finally:
@@ -217,6 +243,7 @@ async def ws_endpoint(websocket: WebSocket):
             await task
         except asyncio.CancelledError:
             pass
+        active_clients.discard(websocket)
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -225,8 +252,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 if __name__ == "__main__":
     import uvicorn
     print("=" * 50)
-    print("🍅 Pomodoro Timer - EVENT-DRIVEN v2")
-    print("⚡ Параллельные задачи для таймера и команд")
-    print("📈 Масштабируется на 1000+ клиентов")
+    print("🍅 Pomodoro Timer - MULTIUSER")
+    print(f"👥 До {MAX_CLIENTS} персональных таймеров")
+    print("🔗 ws://host:8000/ws")
     print("=" * 50)
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
