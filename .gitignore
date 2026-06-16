@@ -37,3 +37,5 @@ htmlcov/
 .coverage.*
 coverage.xml
 *.cover
+
+*.bat

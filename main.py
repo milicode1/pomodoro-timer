@@ -1,6 +1,8 @@
 """
-Pomodoro Timer - Dual Animation (nearest + LURD) with Sound
+Pomodoro Timer - OPTIMIZED VERSION
+Сохранена оригинальная логика анимации, оптимизирован сетевой трафик
 """
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
@@ -15,665 +17,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
-HTML_CONTENT = """<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🍅 Pomodoro Timer</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        body {
-            background: #0a0a0a;
-            color: #00ffcc;
-            font-family: 'Segoe UI', 'Courier New', monospace;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-        }
-        
-        .container {
-            text-align: center;
-            padding: 20px;
-            max-width: 750px;
-            width: 100%;
-        }
-        
-        h1 {
-            font-size: 2.8em;
-            margin-bottom: 15px;
-            text-shadow: 0 0 20px rgba(0, 255, 204, 0.6);
-            letter-spacing: 3px;
-            font-weight: 300;
-        }
-        
-        .info-panel {
-            display: flex;
-            justify-content: center;
-            gap: 30px;
-            margin: 20px 0;
-            font-size: 1.1em;
-        }
-        
-        .info-item {
-            background: #111;
-            padding: 12px 25px;
-            border-radius: 12px;
-            border: 1px solid rgba(0, 255, 204, 0.2);
-        }
-        
-        .info-item strong {
-            font-size: 1.3em;
-        }
-        
-        .clock {
-            background: #0d0d0d;
-            border: 2px solid rgba(0, 255, 204, 0.15);
-            border-radius: 20px;
-            padding: 25px;
-            margin: 20px 0;
-            box-shadow: 0 0 40px rgba(0, 255, 204, 0.08);
-        }
-        
-        canvas {
-            display: block;
-            margin: 0 auto;
-            max-width: 100%;
-            height: auto;
-        }
-        
-        .status {
-            font-size: 1.6em;
-            margin: 20px 0;
-            min-height: 45px;
-        }
-        
-        .controls {
-            display: flex;
-            justify-content: center;
-            gap: 15px;
-            flex-wrap: wrap;
-            margin: 25px 0;
-        }
-        
-        button {
-            background: transparent;
-            border: 2px solid #00ffcc;
-            color: #00ffcc;
-            padding: 14px 30px;
-            font-size: 1.1em;
-            cursor: pointer;
-            border-radius: 12px;
-            min-width: 130px;
-            font-family: inherit;
-        }
-        
-        button:disabled {
-            opacity: 0.3;
-            cursor: not-allowed;
-        }
-        
-        .settings {
-            margin-top: 25px;
-            padding: 18px;
-            background: #111;
-            border: 1px solid rgba(0, 255, 204, 0.15);
-            border-radius: 12px;
-        }
-        
-        .setting-row {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-        
-        .setting-row label {
-            min-width: 200px;
-            text-align: right;
-        }
-        
-        .setting-row input {
-            background: #1a1a1a;
-            border: 1px solid #00ffcc;
-            color: #00ffcc;
-            padding: 10px;
-            width: 75px;
-            text-align: center;
-            border-radius: 8px;
-            font-size: 1.1em;
-        }
-        
-        .notification {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: #00ffcc;
-            color: #0a0a0a;
-            padding: 18px 30px;
-            border-radius: 12px;
-            z-index: 1000;
-            font-weight: bold;
-            animation: slideIn 0.5s ease;
-        }
-        
-        @keyframes slideIn {
-            from { transform: translateX(120%); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
-        }
-        
-        .working { animation: pulse 2s infinite; }
-        .break { color: #ffaa00 !important; animation: pulse 3s infinite; }
-        .paused { color: #ff6666 !important; }
-        
-        .progress-bar {
-            width: 100%;
-            height: 4px;
-            background: rgba(0, 255, 204, 0.1);
-            border-radius: 2px;
-            margin-top: 15px;
-            overflow: hidden;
-        }
-        
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #00ffcc, #00ff88);
-            transition: width 0.5s ease;
-            width: 100%;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🍅 Pomodoro Timer</h1>
-        
-        <div class="info-panel">
-            <div class="info-item">
-                🍅 Сессий: <strong id="sessionCount">0</strong>
-            </div>
-            <div class="info-item">
-                📍 Режим: <strong id="modeIndicator">Работа</strong>
-            </div>
-        </div>
-        
-        <div class="clock">
-            <canvas id="clockCanvas" width="650" height="220"></canvas>
-            <div class="progress-bar">
-                <div class="progress-fill" id="progressFill"></div>
-            </div>
-        </div>
-        
-        <div class="status" id="status">Готов к работе</div>
-        
-        <div class="controls">
-            <button id="startBtn" onclick="sendCommand('start')">▶ Старт</button>
-            <button id="pauseBtn" onclick="sendCommand('pause')" disabled>⏸ Пауза</button>
-            <button id="stopBtn" onclick="sendCommand('stop')" disabled>⏹ Стоп</button>
-        </div>
-        
-        <div class="settings">
-            <div class="setting-row">
-                <label>⏱ Длительность работы (мин):</label>
-                <input type="number" id="workDuration" value="25" min="1" max="60">
-                <button onclick="updateSettings()">Применить</button>
-            </div>
-        </div>
-    </div>
-    
-    <script>
-        // ============================================
-        // Sound System
-        // ============================================
-        class SoundSystem {
-            constructor() {
-                this.audioCtx = null;
-                this.enabled = true;
-            }
-            
-            init() {
-                try {
-                    this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                } catch(e) {
-                    console.log('Web Audio API not supported');
-                    this.enabled = false;
-                }
-            }
-            
-            playBeep(frequency = 800, duration = 200, type = 'sine', volume = 0.3) {
-                if (!this.enabled || !this.audioCtx) return;
-                
-                // Возобновляем контекст если он приостановлен
-                if (this.audioCtx.state === 'suspended') {
-                    this.audioCtx.resume();
-                }
-                
-                const oscillator = this.audioCtx.createOscillator();
-                const gainNode = this.audioCtx.createGain();
-                
-                oscillator.connect(gainNode);
-                gainNode.connect(this.audioCtx.destination);
-                
-                oscillator.type = type;
-                oscillator.frequency.setValueAtTime(frequency, this.audioCtx.currentTime);
-                
-                // Плавное затухание
-                gainNode.gain.setValueAtTime(volume, this.audioCtx.currentTime);
-                gainNode.gain.exponentialRampToValueAtTime(0.01, this.audioCtx.currentTime + duration / 1000);
-                
-                oscillator.start(this.audioCtx.currentTime);
-                oscillator.stop(this.audioCtx.currentTime + duration / 1000);
-            }
-            
-            playTickSound() {
-                // Короткий тик для смены цифр
-                this.playBeep(1000, 50, 'sine', 0.1);
-            }
-            
-            playPhaseChangeSound() {
-                // Мелодия при смене фазы
-                this.playBeep(523, 150, 'sine', 0.3); // До
-                setTimeout(() => this.playBeep(659, 150, 'sine', 0.3), 150); // Ми
-                setTimeout(() => this.playBeep(784, 300, 'sine', 0.3), 300); // Соль
-            }
-            
-            playStartSound() {
-                // Восходящий звук при старте
-                this.playBeep(400, 100, 'sine', 0.2);
-                setTimeout(() => this.playBeep(600, 100, 'sine', 0.2), 100);
-                setTimeout(() => this.playBeep(800, 150, 'sine', 0.3), 200);
-            }
-            
-            playStopSound() {
-                // Нисходящий звук при остановке
-                this.playBeep(600, 100, 'sine', 0.2);
-                setTimeout(() => this.playBeep(400, 100, 'sine', 0.2), 100);
-                setTimeout(() => this.playBeep(200, 150, 'sine', 0.2), 200);
-            }
-        }
-        
-        // ============================================
-        // Animated Display
-        // ============================================
-        class AnimatedDisplay {
-            constructor(canvasId) {
-                this.canvas = document.getElementById(canvasId);
-                this.ctx = this.canvas.getContext('2d');
-                this.pointSize = 8;
-                this.scale = 28;
-                
-                this.positions = {
-                    minutes_tens: { x: 85, y: 55 },
-                    minutes_ones: { x: 175, y: 55 },
-                    seconds_tens: { x: 340, y: 55 },
-                    seconds_ones: { x: 430, y: 55 }
-                };
-                
-                this.currentPoints = {};
-                this.animations = [];
-                
-                this.changeCount = 0;
-                this.animType = 'nearest';
-                
-                this.clearCanvas();
-                this.drawColon();
-                this.animate();
-            }
-            
-            drawPoint(x, y, alpha = 1, size = null) {
-                const ctx = this.ctx;
-                const pointSize = size || this.pointSize;
-                
-                ctx.shadowBlur = 15 * alpha;
-                ctx.shadowColor = `rgba(0, 255, 204, ${0.6 * alpha})`;
-                
-                const gradient = ctx.createRadialGradient(x, y, 0, x, y, pointSize);
-                gradient.addColorStop(0, `rgba(255, 255, 255, ${alpha})`);
-                gradient.addColorStop(0.3, `rgba(200, 255, 230, ${alpha * 0.9})`);
-                gradient.addColorStop(0.6, `rgba(0, 255, 204, ${alpha * 0.7})`);
-                gradient.addColorStop(1, `rgba(0, 255, 204, 0)`);
-                
-                ctx.fillStyle = gradient;
-                ctx.beginPath();
-                ctx.arc(x, y, pointSize * 1.5, 0, Math.PI * 2);
-                ctx.fill();
-                
-                ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.8})`;
-                ctx.beginPath();
-                ctx.arc(x, y, pointSize * 0.3, 0, Math.PI * 2);
-                ctx.fill();
-                
-                ctx.shadowBlur = 0;
-            }
-            
-            drawColon() {
-                const ctx = this.ctx;
-                ctx.shadowBlur = 15;
-                ctx.shadowColor = 'rgba(0, 255, 204, 0.6)';
-                
-                [75, 120].forEach(y => {
-                    const gradient = ctx.createRadialGradient(300, y, 0, 300, y, 8);
-                    gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
-                    gradient.addColorStop(0.5, 'rgba(0, 255, 204, 1)');
-                    gradient.addColorStop(1, 'rgba(0, 255, 204, 0)');
-                    
-                    ctx.fillStyle = gradient;
-                    ctx.beginPath();
-                    ctx.arc(300, y, 8, 0, Math.PI * 2);
-                    ctx.fill();
-                });
-                
-                ctx.shadowBlur = 0;
-            }
-            
-            clearCanvas() {
-                this.ctx.fillStyle = '#0d0d0d';
-                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-            }
-            
-            convertToCanvas(point, pos) {
-                return {
-                    x: pos.x + point[0] * this.scale,
-                    y: pos.y + (5.5 - point[1]) * this.scale
-                };
-            }
-            
-            getCorners(pos) {
-                const matrixWidth = 2.5 * this.scale;
-                const matrixHeight = 5.5 * this.scale;
-                
-                return {
-                    topLeft: { x: pos.x, y: pos.y },
-                    bottomRight: { x: pos.x + matrixWidth, y: pos.y + matrixHeight }
-                };
-            }
-            
-            animateTransition(position, fromPoints, toPoints) {
-                const pos = this.positions[position];
-                if (!pos) return;
-                
-                const toCoords = toPoints.map(p => this.convertToCanvas(p, pos));
-                const corners = this.getCorners(pos);
-                
-                let fromCoords;
-                if (!fromPoints || fromPoints.length === 0) {
-                    if (this.animType === 'lurd') {
-                        fromCoords = toCoords.map(() => ({
-                            x: corners.topLeft.x,
-                            y: corners.topLeft.y
-                        }));
-                    } else {
-                        const cx = pos.x + 1.25 * this.scale;
-                        const cy = pos.y + 2.75 * this.scale;
-                        fromCoords = toCoords.map(() => ({
-                            x: cx + (Math.random() - 0.5) * 20,
-                            y: cy + (Math.random() - 0.5) * 20
-                        }));
-                    }
-                } else {
-                    fromCoords = fromPoints.map(p => this.convertToCanvas(p, pos));
-                }
-                
-                this.animations = this.animations.filter(a => a.position !== position);
-                this.animations.push({
-                    position,
-                    fromCoords,
-                    toCoords,
-                    corners,
-                    startTime: performance.now(),
-                    duration: 400 + Math.random() * 200,
-                    animType: this.animType
-                });
-            }
-            
-            updateDisplay(displayData, animate = true) {
-                let hasChanges = false;
-                
-                for (const [position, data] of Object.entries(displayData)) {
-                    const newPoints = data.points || [];
-                    
-                    if (animate && this.currentPoints[position]) {
-                        const oldStr = JSON.stringify(this.currentPoints[position]);
-                        const newStr = JSON.stringify(newPoints);
-                        if (oldStr !== newStr) {
-                            hasChanges = true;
-                            this.animateTransition(position, this.currentPoints[position], newPoints);
-                        }
-                    }
-                    
-                    this.currentPoints[position] = newPoints;
-                }
-                
-                if (hasChanges) {
-                    this.changeCount++;
-                    if (this.changeCount >= 3) {
-                        this.changeCount = 0;
-                        this.animType = this.animType === 'nearest' ? 'lurd' : 'nearest';
-                    }
-                }
-                
-                return hasChanges;
-            }
-            
-            animate() {
-                this.clearCanvas();
-                this.drawColon();
-                
-                const now = performance.now();
-                const activePositions = new Set(this.animations.map(a => a.position));
-                
-                for (const [position, points] of Object.entries(this.currentPoints)) {
-                    if (activePositions.has(position)) continue;
-                    
-                    const pos = this.positions[position];
-                    if (!pos) continue;
-                    
-                    points.forEach(point => {
-                        const c = this.convertToCanvas(point, pos);
-                        this.drawPoint(c.x, c.y);
-                    });
-                }
-                
-                this.animations = this.animations.filter(anim => {
-                    const elapsed = now - anim.startTime;
-                    const progress = Math.min(1, elapsed / anim.duration);
-                    const t = progress < 0.5 ? 4*progress**3 : 1 - (-2*progress + 2)**3 / 2;
-                    
-                    const maxPoints = Math.max(anim.fromCoords.length, anim.toCoords.length);
-                    const isLURD = anim.animType === 'lurd';
-                    
-                    for (let i = 0; i < maxPoints; i++) {
-                        const fi = Math.min(i, anim.fromCoords.length - 1);
-                        const ti = Math.min(i, anim.toCoords.length - 1);
-                        
-                        const from = anim.fromCoords[fi];
-                        const to = anim.toCoords[ti];
-                        
-                        let x, y, alpha, size = this.pointSize;
-                        
-                        if (i >= anim.fromCoords.length) {
-                            const ap = Math.max(0, (progress - 0.1) / 0.9);
-                            const eased = ap < 0.5 ? 2*ap*ap : 1 - (-2*ap + 2)**2 / 2;
-                            
-                            if (isLURD) {
-                                x = anim.corners.topLeft.x + (to.x - anim.corners.topLeft.x) * eased;
-                                y = anim.corners.topLeft.y + (to.y - anim.corners.topLeft.y) * eased;
-                            } else {
-                                x = to.x;
-                                y = to.y;
-                            }
-                            alpha = eased;
-                            size *= (0.5 + eased * 0.5);
-                        } else if (i >= anim.toCoords.length) {
-                            const dp = Math.min(1, progress / 0.5);
-                            
-                            if (isLURD) {
-                                x = from.x + (anim.corners.bottomRight.x - from.x) * dp;
-                                y = from.y + (anim.corners.bottomRight.y - from.y) * dp;
-                            } else {
-                                x = from.x + (to.x - from.x) * dp;
-                                y = from.y + (to.y - from.y) * dp;
-                            }
-                            alpha = 1 - dp;
-                            size *= (1 - dp * 0.5);
-                        } else {
-                            x = from.x + (to.x - from.x) * t;
-                            y = from.y + (to.y - from.y) * t;
-                            alpha = 1;
-                        }
-                        
-                        if (alpha > 0.01) this.drawPoint(x, y, alpha, size);
-                    }
-                    
-                    return progress < 1;
-                });
-                
-                requestAnimationFrame(() => this.animate());
-            }
-        }
-        
-        // ============================================
-        // Main App
-        // ============================================
-        const sound = new SoundSystem();
-        const display = new AnimatedDisplay('clockCanvas');
-        let ws = null;
-        let reconnectAttempts = 0;
-        let previousDigits = {};
-        
-        // Инициализация звука при первом клике
-        document.addEventListener('click', () => {
-            sound.init();
-        }, { once: true });
-        
-        function connectWebSocket() {
-            ws = new WebSocket(`ws://${window.location.host}/ws`);
-            
-            ws.onopen = () => {
-                reconnectAttempts = 0;
-                document.getElementById('status').textContent = 'Готов к работе';
-                document.getElementById('status').className = 'status';
-                updateButtons('stopped');
-            };
-            
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                
-                if (data.type === 'timer_update') {
-                    if (data.display) {
-                        const hasChanges = display.updateDisplay(data.display, true);
-                        for (const [pos, info] of Object.entries(data.display)) {
-                            previousDigits[pos] = info.digit;
-                        }
-                    }
-                    
-                    const statusEl = document.getElementById('status');
-                    const modeEl = document.getElementById('modeIndicator');
-                    const progressFill = document.getElementById('progressFill');
-                    
-                    const totalDuration = data.state === 'working' ? 1500 : 
-                                        data.sessions % 4 === 0 ? 900 : 300;
-                    const remaining = data.minutes * 60 + data.seconds;
-                    progressFill.style.width = `${Math.min(100, Math.max(0, ((totalDuration - remaining) / totalDuration) * 100))}%`;
-                    
-                    switch(data.state) {
-                        case 'working':
-                            statusEl.textContent = '⚡ Работаем!';
-                            statusEl.className = 'status working';
-                            modeEl.textContent = 'Работа';
-                            break;
-                        case 'break':
-                            statusEl.textContent = '☕ Перерыв';
-                            statusEl.className = 'status break';
-                            modeEl.textContent = 'Отдых';
-                            break;
-                        case 'paused':
-                            statusEl.textContent = '⏸ Пауза';
-                            statusEl.className = 'status paused';
-                            break;
-                        default:
-                            statusEl.textContent = 'Готов к работе';
-                            statusEl.className = 'status';
-                            modeEl.textContent = 'Работа';
-                            progressFill.style.width = '100%';
-                    }
-                    
-                    document.getElementById('sessionCount').textContent = data.sessions || 0;
-                    updateButtons(data.state);
-                    
-                    if (data.phase_changed) {
-                        sound.playPhaseChangeSound();
-                        showNotification(data.state === 'working' ? '🔔 Время работать!' : '🔔 Время отдыхать!');
-                    }
-                }
-            };
-            
-            ws.onclose = () => {
-                document.getElementById('status').textContent = 'Переподключение...';
-                document.getElementById('status').className = 'status paused';
-                setTimeout(connectWebSocket, Math.min(1000 * 2**reconnectAttempts++, 10000));
-            };
-        }
-        
-        function updateButtons(state) {
-            const startBtn = document.getElementById('startBtn');
-            const pauseBtn = document.getElementById('pauseBtn');
-            const stopBtn = document.getElementById('stopBtn');
-            
-            startBtn.disabled = state !== 'stopped' && state !== 'paused';
-            pauseBtn.disabled = state === 'stopped' || state === 'paused';
-            stopBtn.disabled = state === 'stopped';
-        }
-        
-        function sendCommand(action) {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ action }));
-                
-                // Звуки при нажатии кнопок
-                if (action === 'start') sound.playStartSound();
-                else if (action === 'stop') sound.playStopSound();
-            }
-        }
-        
-        function updateSettings() {
-            const d = parseInt(document.getElementById('workDuration').value);
-            if (d >= 1 && d <= 60 && ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ action: 'set_duration', duration: d }));
-            }
-        }
-        
-        function showNotification(message) {
-            const n = document.createElement('div');
-            n.className = 'notification';
-            n.textContent = message;
-            document.body.appendChild(n);
-            setTimeout(() => n.remove(), 2500);
-        }
-        
-        document.addEventListener('keydown', (e) => {
-            if (e.key === ' ') {
-                e.preventDefault();
-                const sb = document.getElementById('startBtn');
-                sb.disabled ? sendCommand('pause') : sendCommand('start');
-            } else if (e.key === 'Escape') sendCommand('stop');
-        });
-        
-        connectWebSocket();
-    </script>
-</body>
-</html>"""
+# ============================================
+# Backend Classes
+# ============================================
 
-with open(os.path.join(STATIC_DIR, "index.html"), "w", encoding="utf-8") as f:
-    f.write(HTML_CONTENT)
-
-# Backend
 class DigitRenderer:
     def __init__(self):
         self.digits = self._create_digits()
@@ -755,6 +102,7 @@ class DigitRenderer:
                 for i, (p, o) in enumerate([("minutes","tens"),("minutes","ones"),
                                             ("seconds","tens"),("seconds","ones")])}
 
+
 class PomodoroTimer:
     def __init__(self):
         self.work_dur = 1500
@@ -811,13 +159,26 @@ class PomodoroTimer:
         t = int(self.get_remaining())
         return t // 60, t % 60
 
+
+# ============================================
+# Инициализация
+# ============================================
+
 renderer = DigitRenderer()
 timer = PomodoroTimer()
 
+
+# ============================================
+# Роуты
+# ============================================
+
 @app.get("/")
 async def root():
-    with open(os.path.join(STATIC_DIR, "index.html"), "r", encoding="utf-8") as f:
+    """Отдаёт index.html из папки static"""
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    with open(index_path, "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read())
+
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
@@ -856,14 +217,21 @@ async def ws_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
 
+
+# Монтируем статику (на случай других ресурсов)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+# ============================================
+# Запуск
+# ============================================
 
 if __name__ == "__main__":
     import uvicorn
     print("=" * 50)
-    print("🍅 Pomodoro Timer - Dual Animation + Sound")
-    print("🎬 nearest ↔ LURD")
-    print("🔊 Sound effects enabled")
+    print("🍅 Pomodoro Timer - OPTIMIZED")
+    print("🎬 nearest ↔ LURD (original logic preserved)")
+    print("⚡ Gradient caching enabled")
     print("=" * 50)
     print("Open: http://localhost:8000")
     print("=" * 50)
