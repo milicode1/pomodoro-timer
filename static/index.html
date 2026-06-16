@@ -181,6 +181,116 @@
 
     <script>
         // ============================================
+        // Digit Renderer (ЛОКАЛЬНЫЙ — на клиенте!)
+        // ============================================
+        class DigitRenderer {
+            constructor() {
+                this.digits = this._createDigits();
+            }
+            
+            _createDigits() {
+                const d = {0:[], 1:[], 2:[], 3:[], 4:[], 5:[], 6:[], 7:[], 8:[], 9:[]};
+                
+                // Каждая цифра — матрица 5x11 (x, y)
+                const set = (digit, y, x) => { if (!d[digit][y]) d[digit][y] = []; d[digit][y][x] = 1; };
+                
+                // 0
+                for (let y = 1; y < 10; y++) { set(0, y, 0); set(0, y, 4); }
+                for (let x = 1; x < 4; x++) { set(0, 0, x); set(0, 10, x); }
+                set(0, 4, 3); set(0, 5, 2); set(0, 6, 1);
+                
+                // 1
+                for (let y = 0; y < 11; y++) set(1, y, 2);
+                set(1, 1, 1); set(1, 2, 0);
+                for (let x = 0; x < 5; x++) set(1, 10, x);
+                
+                // 2
+                for (let x = 1; x < 4; x++) set(2, 0, x);
+                set(2, 1, 0); set(2, 2, 0);
+                for (let y = 1; y < 6; y++) set(2, y, 4);
+                set(2, 6, 3); set(2, 7, 2); set(2, 8, 1); set(2, 9, 0);
+                for (let x = 0; x < 5; x++) set(2, 10, x);
+                
+                // 3
+                for (let y of [1,2,8,9]) set(3, y, 0);
+                for (let y = 1; y < 5; y++) set(3, y, 4);
+                for (let y = 6; y < 10; y++) set(3, y, 4);
+                for (let x = 1; x < 4; x++) { set(3, 0, x); set(3, 5, x); set(3, 10, x); }
+                
+                // 4
+                for (let y = 0; y < 6; y++) set(4, y, 0);
+                for (let y = 1; y < 11; y++) set(4, y, 3);
+                for (let x = 0; x < 5; x++) set(4, 5, x);
+                
+                // 5
+                for (let x = 0; x < 5; x++) set(5, 0, x);
+                for (let x = 1; x < 4; x++) { set(5, 4, x); set(5, 10, x); }
+                for (let y = 1; y < 6; y++) set(5, y, 0);
+                for (let y = 5; y < 10; y++) set(5, y, 4);
+                set(5, 9, 0);
+                
+                // 6
+                for (let x = 1; x < 4; x++) { set(6, 0, x); set(6, 4, x); set(6, 10, x); }
+                for (let y = 1; y < 10; y++) set(6, y, 0);
+                for (let y = 5; y < 10; y++) set(6, y, 4);
+                set(6, 1, 4);
+                
+                // 7
+                for (let x = 0; x < 5; x++) set(7, 0, x);
+                set(7, 1, 0); set(7, 2, 0);
+                for (let y = 1; y < 4; y++) set(7, y, 4);
+                set(7, 4, 3); set(7, 5, 2);
+                for (let y = 6; y < 11; y++) set(7, y, 2);
+                
+                // 8
+                for (let y = 1; y < 5; y++) { set(8, y, 0); set(8, y, 4); }
+                for (let y = 6; y < 10; y++) { set(8, y, 0); set(8, y, 4); }
+                for (let x = 1; x < 4; x++) { set(8, 0, x); set(8, 5, x); set(8, 10, x); }
+                
+                // 9
+                for (let y = 1; y < 5; y++) set(9, y, 0);
+                for (let y = 1; y < 10; y++) set(9, y, 4);
+                for (let x = 1; x < 4; x++) { set(9, 0, x); set(9, 5, x); set(9, 10, x); }
+                set(9, 9, 0);
+                
+                return d;
+            }
+            
+            getCoords(digit) {
+                const coords = [];
+                const matrix = this.digits[digit] || [];
+                for (let y = 0; y < 11; y++) {
+                    if (!matrix[y]) continue;
+                    for (let x = 0; x < 5; x++) {
+                        if (matrix[y][x]) {
+                            coords.push([x * 0.5, (10 - y) * 0.5]);
+                        }
+                    }
+                }
+                return coords;
+            }
+            
+            getDisplay(minutes, seconds) {
+                const t = `${String(minutes).padStart(2, '0')}${String(seconds).padStart(2, '0')}`;
+                const positions = [
+                    ["minutes", "tens"],
+                    ["minutes", "ones"],
+                    ["seconds", "tens"],
+                    ["seconds", "ones"]
+                ];
+                const display = {};
+                positions.forEach(([prefix, suffix], i) => {
+                    const digit = parseInt(t[i]);
+                    display[`${prefix}_${suffix}`] = {
+                        digit: digit,
+                        points: this.getCoords(digit)
+                    };
+                });
+                return display;
+            }
+        }
+
+        // ============================================
         // Sound System
         // ============================================
         class SoundSystem {
@@ -238,7 +348,7 @@
         }
 
         // ============================================
-        // Animated Display - OPTIMIZED
+        // Animated Display
         // ============================================
         class AnimatedDisplay {
             constructor(canvasId) {
@@ -257,7 +367,6 @@
                 this.changeCount = 0;
                 this.animType = 'nearest';
                 
-                // КЭШИРОВАНИЕ ГРАДИЕНТОВ для производительности
                 this.gradientCache = new Map();
                 
                 this.clearCanvas();
@@ -265,7 +374,6 @@
                 this.animate();
             }
             
-            // Кэшированный градиент
             getCachedGradient(x, y, alpha, size) {
                 const key = `${Math.round(x)}_${Math.round(y)}_${alpha.toFixed(2)}_${size}`;
                 if (this.gradientCache.has(key)) {
@@ -278,7 +386,6 @@
                 gradient.addColorStop(0.6, `rgba(0, 255, 204, ${alpha * 0.7})`);
                 gradient.addColorStop(1, `rgba(0, 255, 204, 0)`);
                 
-                // Ограничиваем размер кэша
                 if (this.gradientCache.size > 500) {
                     this.gradientCache.clear();
                 }
@@ -422,7 +529,7 @@
                 const now = performance.now();
                 const activePositions = new Set(this.animations.map(a => a.position));
                 
-                // Рисуем статические точки
+                // Статические точки
                 for (const [position, points] of Object.entries(this.currentPoints)) {
                     if (activePositions.has(position)) continue;
                     
@@ -435,7 +542,7 @@
                     });
                 }
                 
-                // Обрабатываем анимации
+                // Анимации
                 this.animations = this.animations.filter(anim => {
                     const elapsed = now - anim.startTime;
                     const progress = Math.min(1, elapsed / anim.duration);
@@ -499,10 +606,10 @@
         // Main App
         // ============================================
         const sound = new SoundSystem();
+        const digitRenderer = new DigitRenderer();  // ЛОКАЛЬНЫЙ рендерер!
         const display = new AnimatedDisplay('clockCanvas');
         let ws = null;
         let reconnectAttempts = 0;
-        let previousDigits = {};
 
         document.addEventListener('click', () => {
             sound.init();
@@ -522,12 +629,9 @@
                 const data = JSON.parse(event.data);
                 
                 if (data.type === 'timer_update') {
-                    if (data.display) {
-                        const hasChanges = display.updateDisplay(data.display, true);
-                        for (const [pos, info] of Object.entries(data.display)) {
-                            previousDigits[pos] = info.digit;
-                        }
-                    }
+                    // САМИ вычисляем координаты на клиенте!
+                    const displayData = digitRenderer.getDisplay(data.minutes, data.seconds);
+                    display.updateDisplay(displayData, true);
                     
                     const statusEl = document.getElementById('status');
                     const modeEl = document.getElementById('modeIndicator');
