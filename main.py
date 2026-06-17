@@ -1,34 +1,38 @@
 """
-Pomodoro Timer - MULTIUSER (до 20 человек)
+Pomodoro Timer - MULTIUSER (до 20 человек) + PWA с офлайн-режимом
 ✅ Каждому пользователю — свой персональный таймер
 ✅ Без комнат — у каждого свой независимый таймер
 ✅ Событийная модель
+✅ PWA с офлайн-работой — таймер тикает без интернета
+✅ Синхронизация при восстановлении связи
 """
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 import asyncio
 import json
 import time
 import os
+from datetime import datetime
+from typing import Optional, Dict
 
-app = FastAPI(title="Pomodoro Timer - MultiUser")
+app = FastAPI(title="Pomodoro Timer - MultiUser PWA Offline")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 MAX_CLIENTS = 20
-active_clients = set()
+active_clients: Dict[str, dict] = {}
 
 
 class PersonalTimer:
     """Персональный таймер для одного пользователя"""
-    def __init__(self):
-        self.work_dur = 1500
-        self.break_dur = 300
-        self.long_break = 900
+    def __init__(self, client_id: str = None):
+        self.work_dur = 1500  # 25 минут
+        self.break_dur = 300  # 5 минут
+        self.long_break = 900  # 15 минут
         self.state = "stopped"
         self.remaining = self.work_dur
         self.start_t = None
@@ -36,8 +40,11 @@ class PersonalTimer:
         self.is_work = True
         self.paused_state = None
         self._event = asyncio.Event()
+        self.client_id = client_id
+        self.last_sync_time = time.time()
+        self.offline_start_time = None  # Время начала офлайн-сессии
     
-    def start(self):
+    def start(self, from_sync: bool = False, sync_time: float = None):
         if self.state == "stopped":
             self.state = "working"
             self.remaining = self.work_dur
@@ -48,12 +55,21 @@ class PersonalTimer:
             else:
                 self.state = "working"
             self.paused_state = None
-        self.start_t = time.time()
+        
+        if from_sync and sync_time:
+            self.start_t = sync_time
+        else:
+            self.start_t = time.time()
+        
+        self.last_sync_time = time.time()
         self._notify()
     
-    def pause(self):
+    def pause(self, from_sync: bool = False, sync_remaining: float = None):
         if self.state in ["working", "break"]:
-            self.remaining = max(0, self.remaining - (time.time() - self.start_t))
+            if from_sync and sync_remaining is not None:
+                self.remaining = sync_remaining
+            else:
+                self.remaining = max(0, self.remaining - (time.time() - self.start_t))
             self.paused_state = self.state
             self.state = "paused"
             self._notify()
@@ -109,6 +125,53 @@ class PersonalTimer:
         t = int(self.get_remaining())
         return t // 60, t % 60
     
+    def get_state_snapshot(self) -> dict:
+        """Получить полное состояние таймера для синхронизации"""
+        m, s = self.get_time()
+        return {
+            "state": self.state,
+            "remaining": self.get_remaining(),
+            "minutes": m,
+            "seconds": s,
+            "sessions": self.sessions,
+            "is_work": self.is_work,
+            "work_dur": self.work_dur,
+            "break_dur": self.break_dur,
+            "long_break": self.long_break,
+            "start_t": self.start_t,
+            "paused_state": self.paused_state,
+            "timestamp": time.time(),
+            "total_duration": self.get_total_duration()
+        }
+    
+    def sync_from_client(self, client_state: dict):
+        """Синхронизация состояния с клиента"""
+        if client_state.get("state") == "stopped":
+            return
+        
+        # Восстанавливаем состояние
+        self.state = client_state.get("state", "stopped")
+        self.sessions = client_state.get("sessions", 0)
+        self.is_work = client_state.get("is_work", True)
+        self.work_dur = client_state.get("work_dur", 1500)
+        self.remaining = client_state.get("remaining", self.work_dur)
+        self.paused_state = client_state.get("paused_state")
+        
+        # Корректируем время с учетом задержки
+        client_timestamp = client_state.get("timestamp", 0)
+        delay = time.time() - client_timestamp
+        
+        if self.state in ["working", "break"]:
+            client_start = client_state.get("start_t")
+            if client_start:
+                self.start_t = client_start + delay
+                # Учитываем, что таймер тикал во время передачи
+                self.remaining = max(0, client_state.get("remaining", 0) - delay)
+            else:
+                self.start_t = time.time()
+        
+        self._notify()
+    
     def _notify(self):
         self._event.set()
         self._event.clear()
@@ -126,13 +189,196 @@ class PersonalTimer:
 @app.get("/")
 async def root():
     index_path = os.path.join(STATIC_DIR, "index.html")
-    with open(index_path, "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read())
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse(content="<h1>Index file not found</h1>", status_code=404)
+
+
+@app.get("/manifest.json")
+async def manifest():
+    manifest = {
+        "name": "Pomodoro Timer",
+        "short_name": "Pomodoro",
+        "description": "Многопользовательский Pomodoro таймер с офлайн-режимом",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0a0a0a",
+        "theme_color": "#00ffcc",
+        "orientation": "portrait-primary",
+        "icons": [
+            {
+                "src": "/static/icon-192.png",
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "any maskable"
+            },
+            {
+                "src": "/static/icon-512.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any maskable"
+            }
+        ]
+    }
+    return manifest
+
+
+@app.get("/sw.js")
+async def service_worker():
+    sw_content = """
+const CACHE_NAME = 'pomodoro-timer-v2';
+const ASSETS_TO_CACHE = [
+    '/',
+    '/static/index.html',
+    '/static/icon-192.png',
+    '/static/icon-512.png',
+    '/manifest.json'
+];
+
+// Установка Service Worker
+self.addEventListener('install', (event) => {
+    console.log('Service Worker: Installing...');
+    event.waitUntil(
+        caches.open(CACHE_NAME)
+            .then((cache) => {
+                console.log('Service Worker: Caching files');
+                return cache.addAll(ASSETS_TO_CACHE);
+            })
+            .then(() => {
+                console.log('Service Worker: Skip waiting');
+                return self.skipWaiting();
+            })
+    );
+});
+
+// Активация Service Worker
+self.addEventListener('activate', (event) => {
+    console.log('Service Worker: Activating...');
+    event.waitUntil(
+        caches.keys().then((cacheNames) => {
+            return Promise.all(
+                cacheNames.map((cache) => {
+                    if (cache !== CACHE_NAME) {
+                        console.log('Service Worker: Clearing old cache');
+                        return caches.delete(cache);
+                    }
+                })
+            );
+        })
+    );
+    return self.clients.claim();
+});
+
+// Перехват запросов
+self.addEventListener('fetch', (event) => {
+    // Не кэшируем WebSocket соединения
+    if (event.request.url.includes('/ws') || event.request.url.includes('/api/sync')) {
+        return;
+    }
+    
+    event.respondWith(
+        caches.match(event.request)
+            .then((cachedResponse) => {
+                if (cachedResponse) {
+                    return cachedResponse;
+                }
+                
+                return fetch(event.request)
+                    .then((response) => {
+                        if (response && response.status === 200) {
+                            const responseClone = response.clone();
+                            caches.open(CACHE_NAME)
+                                .then((cache) => {
+                                    cache.put(event.request, responseClone);
+                                });
+                        }
+                        return response;
+                    })
+                    .catch(() => {
+                        if (event.request.mode === 'navigate') {
+                            return caches.match('/');
+                        }
+                        return null;
+                    });
+            })
+    );
+});
+
+// Обработка сообщений от клиента
+self.addEventListener('message', (event) => {
+    if (event.data && event.data.type === 'SKIP_WAITING') {
+        self.skipWaiting();
+    }
+});
+
+// Обработка push-уведомлений
+self.addEventListener('push', (event) => {
+    const options = {
+        body: event.data ? event.data.text() : 'Время вышло!',
+        icon: '/static/icon-192.png',
+        badge: '/static/icon-192.png',
+        vibrate: [200, 100, 200],
+        tag: 'pomodoro-notification',
+        renotify: true,
+        actions: [
+            { action: 'start', title: 'Старт' },
+            { action: 'stop', title: 'Стоп' }
+        ]
+    };
+    
+    event.waitUntil(
+        self.registration.showNotification('Pomodoro Timer', options)
+    );
+});
+
+// Обработка кликов по уведомлениям
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    
+    event.waitUntil(
+        clients.matchAll({ type: 'window' })
+            .then((clientList) => {
+                for (const client of clientList) {
+                    if (client.url === '/' && 'focus' in client) {
+                        return client.focus();
+                    }
+                }
+                if (clients.openWindow) {
+                    return clients.openWindow('/');
+                }
+            })
+    );
+});
+"""
+    return HTMLResponse(content=sw_content, media_type="application/javascript")
 
 
 @app.get("/api/stats")
 async def stats():
     return {"active_users": len(active_clients), "max_users": MAX_CLIENTS}
+
+
+@app.post("/api/sync")
+async def sync_state(request: Request):
+    """Endpoint для HTTP синхронизации (когда WebSocket недоступен)"""
+    try:
+        data = await request.json()
+        client_id = data.get("client_id")
+        client_state = data.get("state")
+        
+        if client_id and client_id in active_clients:
+            client_info = active_clients[client_id]
+            timer = client_info["timer"]
+            timer.sync_from_client(client_state)
+            
+            snapshot = timer.get_state_snapshot()
+            snapshot["server_time"] = time.time()
+            return JSONResponse(snapshot)
+        
+        return JSONResponse({"error": "Client not found"}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
 
 
 @app.websocket("/ws")
@@ -148,24 +394,33 @@ async def ws_endpoint(websocket: WebSocket):
         return
     
     await websocket.accept()
-    active_clients.add(websocket)
+    
+    # Генерируем уникальный ID клиента
+    client_id = str(id(websocket))
+    active_clients[client_id] = {"websocket": websocket, "timer": None}
     
     # Персональный таймер для этого пользователя
-    timer = PersonalTimer()
+    timer = PersonalTimer(client_id)
+    active_clients[client_id]["timer"] = timer
     
-    # Отправляем начальное состояние
+    # Отправляем начальное состояние с client_id
     m, s = timer.get_time()
     total_dur = timer.get_total_duration()
     
     await websocket.send_json({
-        "type": "timer_update",
-        "minutes": m,
-        "seconds": s,
-        "state": timer.state,
-        "sessions": timer.sessions,
-        "phase_changed": False,
-        "total_duration": total_dur,
-        "online": len(active_clients)
+        "type": "init",
+        "client_id": client_id,
+        "timer_update": {
+            "type": "timer_update",
+            "minutes": m,
+            "seconds": s,
+            "state": timer.state,
+            "sessions": timer.sessions,
+            "phase_changed": False,
+            "total_duration": total_dur,
+            "online": len(active_clients),
+            "timestamp": time.time()
+        }
     })
     
     last_minutes = m
@@ -205,7 +460,8 @@ async def ws_endpoint(websocket: WebSocket):
                             "sessions": timer.sessions,
                             "phase_changed": changed,
                             "total_duration": total_dur,
-                            "online": len(active_clients)
+                            "online": len(active_clients),
+                            "timestamp": time.time()
                         })
                         
                         last_minutes = m
@@ -234,6 +490,17 @@ async def ws_endpoint(websocket: WebSocket):
                     timer.stop()
                 elif action == "set_duration":
                     timer.set_duration(cmd.get("duration", 25))
+                elif action == "sync":
+                    # Клиент отправляет свое состояние для синхронизации
+                    timer.sync_from_client(cmd.get("timer_state", {}))
+                    
+                    # Отправляем подтверждение синхронизации
+                    snapshot = timer.get_state_snapshot()
+                    await websocket.send_json({
+                        "type": "sync_confirmed",
+                        "server_state": snapshot,
+                        "server_time": time.time()
+                    })
                     
             except WebSocketDisconnect:
                 break
@@ -243,7 +510,8 @@ async def ws_endpoint(websocket: WebSocket):
             await task
         except asyncio.CancelledError:
             pass
-        active_clients.discard(websocket)
+        if client_id in active_clients:
+            del active_clients[client_id]
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -252,8 +520,10 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 if __name__ == "__main__":
     import uvicorn
     print("=" * 50)
-    print("🍅 Pomodoro Timer - MULTIUSER")
+    print("🍅 Pomodoro Timer - MULTIUSER PWA + OFFLINE")
     print(f"👥 До {MAX_CLIENTS} персональных таймеров")
     print("🔗 ws://host:8000/ws")
+    print("📱 PWA с офлайн-режимом")
+    print("🔄 Автосинхронизация при восстановлении связи")
     print("=" * 50)
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

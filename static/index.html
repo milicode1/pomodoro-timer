@@ -2,7 +2,13 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#0a0a0a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Pomodoro">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <link rel="manifest" href="/manifest.json">
     <title>🍅 Pomodoro Timer</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -136,6 +142,7 @@
         .working { color: #ff6347 !important; animation: pulse 2s infinite; }
         .break { color: #4caf50 !important; animation: pulse 3s infinite; }
         .paused { color: #ffcc00 !important; }
+        .offline { color: #ff6347 !important; }
         .progress-bar {
             width: 100%;
             height: 4px;
@@ -149,9 +156,44 @@
             transition: width 0.5s ease, background 0.5s ease;
             width: 100%;
         }
+        
+        /* Индикатор офлайн-режима */
+        .connection-indicator {
+            position: fixed;
+            top: 15px;
+            left: 15px;
+            z-index: 999;
+            padding: 6px 15px;
+            border-radius: 20px;
+            font-size: 0.75em;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+            transition: all 0.3s ease;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .connection-indicator.offline {
+            opacity: 1;
+            background: rgba(255, 99, 71, 0.15);
+            border: 1px solid rgba(255, 99, 71, 0.4);
+            color: #ff6347;
+        }
+        .connection-indicator.online {
+            opacity: 1;
+            background: rgba(76, 175, 80, 0.15);
+            border: 1px solid rgba(76, 175, 80, 0.4);
+            color: #4caf50;
+            animation: fadeOut 2s forwards 3s;
+        }
+        @keyframes fadeOut {
+            to { opacity: 0; }
+        }
     </style>
 </head>
 <body>
+    <!-- Индикатор соединения -->
+    <div class="connection-indicator" id="connectionIndicator"></div>
+
     <div class="container">
         <h1>🍅 Pomodoro Timer</h1>
         <div class="info-panel">
@@ -184,6 +226,191 @@
     </div>
 
     <script>
+        // ============================================
+        // Offline Timer Logic (локальный таймер)
+        // ============================================
+        class LocalTimer {
+            constructor() {
+                this.workDuration = 25 * 60; // секунды
+                this.breakDuration = 5 * 60;
+                this.longBreakDuration = 15 * 60;
+                this.state = 'stopped'; // stopped, working, break, paused
+                this.remaining = this.workDuration;
+                this.startTime = null;
+                this.sessions = 0;
+                this.isWork = true;
+                this.pausedRemaining = null;
+                this.pausedState = null;
+                this.intervalId = null;
+                this.onUpdate = null; // callback
+                this.onPhaseChange = null; // callback
+            }
+
+            start() {
+                if (this.state === 'stopped') {
+                    this.state = 'working';
+                    this.remaining = this.workDuration;
+                    this.isWork = true;
+                } else if (this.state === 'paused') {
+                    this.state = this.pausedState || 'working';
+                    this.pausedState = null;
+                    this.remaining = this.pausedRemaining;
+                    this.pausedRemaining = null;
+                }
+                this.startTime = Date.now();
+                this._startInterval();
+                this._notify();
+            }
+
+            pause() {
+                if (this.state === 'working' || this.state === 'break') {
+                    const elapsed = (Date.now() - this.startTime) / 1000;
+                    this.pausedRemaining = Math.max(0, this.remaining - elapsed);
+                    this.pausedState = this.state;
+                    this.state = 'paused';
+                    this._stopInterval();
+                    this._notify();
+                }
+            }
+
+            stop() {
+                this.state = 'stopped';
+                this.remaining = this.workDuration;
+                this.startTime = null;
+                this.isWork = true;
+                this.pausedRemaining = null;
+                this.pausedState = null;
+                this._stopInterval();
+                this._notify();
+            }
+
+            setDuration(minutes) {
+                this.workDuration = minutes * 60;
+                if (this.state === 'stopped') {
+                    this.remaining = this.workDuration;
+                    this._notify();
+                }
+            }
+
+            getRemaining() {
+                if (this.state === 'stopped') {
+                    return this.workDuration;
+                }
+                if (this.state === 'paused') {
+                    return this.pausedRemaining;
+                }
+                const elapsed = (Date.now() - this.startTime) / 1000;
+                return Math.max(0, this.remaining - elapsed);
+            }
+
+            getTotalDuration() {
+                if (this.state === 'working') {
+                    return this.workDuration;
+                } else if (this.state === 'break') {
+                    return this.sessions % 4 === 0 ? this.longBreakDuration : this.breakDuration;
+                } else if (this.pausedState === 'break') {
+                    return this.sessions % 4 === 0 ? this.longBreakDuration : this.breakDuration;
+                }
+                return this.workDuration;
+            }
+
+            getMinutesSeconds() {
+                const t = Math.floor(this.getRemaining());
+                return {
+                    minutes: Math.floor(t / 60),
+                    seconds: t % 60
+                };
+            }
+
+            _startInterval() {
+                this._stopInterval();
+                this.intervalId = setInterval(() => {
+                    if (this.state === 'working' || this.state === 'break') {
+                        const remaining = this.getRemaining();
+                        if (remaining <= 0) {
+                            this._onPhaseEnd();
+                        }
+                        this._notify();
+                    }
+                }, 100); // Проверяем каждые 100мс для точности
+            }
+
+            _stopInterval() {
+                if (this.intervalId) {
+                    clearInterval(this.intervalId);
+                    this.intervalId = null;
+                }
+            }
+
+            _onPhaseEnd() {
+                if (this.isWork) {
+                    this.sessions++;
+                    this.state = 'break';
+                    this.isWork = false;
+                    this.remaining = this.sessions % 4 === 0 ? this.longBreakDuration : this.breakDuration;
+                } else {
+                    this.state = 'working';
+                    this.isWork = true;
+                    this.remaining = this.workDuration;
+                }
+                this.startTime = Date.now();
+                if (this.onPhaseChange) {
+                    this.onPhaseChange(this.state);
+                }
+            }
+
+            _notify() {
+                if (this.onUpdate) {
+                    const time = this.getMinutesSeconds();
+                    this.onUpdate({
+                        minutes: time.minutes,
+                        seconds: time.seconds,
+                        state: this.state,
+                        sessions: this.sessions,
+                        totalDuration: this.getTotalDuration()
+                    });
+                }
+            }
+
+            getState() {
+                return {
+                    state: this.state,
+                    remaining: this.getRemaining(),
+                    sessions: this.sessions,
+                    is_work: this.isWork,
+                    work_dur: this.workDuration,
+                    paused_state: this.pausedState,
+                    start_t: this.startTime ? this.startTime / 1000 : null,
+                    timestamp: Date.now() / 1000
+                };
+            }
+
+            syncFromServer(serverState) {
+                if (serverState.state === 'stopped') {
+                    return;
+                }
+
+                this.state = serverState.state;
+                this.sessions = serverState.sessions;
+                this.isWork = serverState.is_work !== undefined ? serverState.is_work : true;
+                this.workDuration = serverState.work_dur || this.workDuration;
+                this.pausedState = serverState.paused_state || null;
+
+                if (this.state === 'paused') {
+                    this.pausedRemaining = serverState.remaining;
+                } else if (this.state === 'working' || this.state === 'break') {
+                    // Синхронизируем время с учетом задержки
+                    const serverTime = serverState.timestamp || Date.now() / 1000;
+                    const delay = (Date.now() / 1000) - serverTime;
+                    this.remaining = Math.max(0, serverState.remaining - delay);
+                    this.startTime = Date.now();
+                    this._startInterval();
+                }
+
+                this._notify();
+            }
+        }
+
         // ============================================
         // Digit Renderer
         // ============================================
@@ -542,10 +769,6 @@
                 };
             }
             
-            // ============================================
-            // HORIZONTAL анимация (строго по Y-линиям)
-            // HORIZONTAL анимация (строго по Y-линиям) — ПОЛНОСТЬЮ ИСПРАВЛЕНО
-            // HORIZONTAL анимация — ИСПРАВЛЕНО РАСЩЕПЛЕНИЕ
             buildHorizontalAnimation(position, oldPoints, newPoints) {
                 const pos = this.positions[position];
                 if (!pos) return null;
@@ -587,7 +810,6 @@
                     const removing = oldInRow.filter(c => !newXSet.has(Math.round(c.x)));
                     const adding = newInRow.filter(c => !oldXSet.has(Math.round(c.x)));
                     
-                    // Нет старых
                     if (oldInRow.length === 0) {
                         adding.forEach((target, i) => {
                             particles.push({
@@ -599,7 +821,6 @@
                         return;
                     }
                     
-                    // Нет новых
                     if (newInRow.length === 0) {
                         oldInRow.forEach((p, i) => {
                             particles.push({
@@ -611,7 +832,6 @@
                         return;
                     }
                     
-                    // Сохраняемые стоят
                     keeping.forEach(p => {
                         particles.push({
                             fromX: p.x, fromY: p.y,
@@ -620,12 +840,7 @@
                         });
                     });
                     
-                    // ============================================
-                    // ПРАВИЛЬНОЕ РАСЩЕПЛЕНИЕ
-                    // ============================================
-                    
-                    // Считаем, сколько новых точек закреплено за каждой старой
-                    const oldAssignments = {}; // key -> [{target, isRemoving}]
+                    const oldAssignments = {};
                     
                     adding.forEach(target => {
                         let nearest = null;
@@ -649,7 +864,6 @@
                         }
                     });
                     
-                    // Обрабатываем каждую старую точку
                     const processedRemoving = new Set();
                     
                     Object.entries(oldAssignments).forEach(([key, assignments]) => {
@@ -658,8 +872,6 @@
                         const count = assignments.length;
                         
                         if (isRemoving) {
-                            // Удаляемая точка: первая назначенная = оригинал переезжает
-                            // Остальные = расщепление (копии)
                             assignments.forEach((a, i) => {
                                 particles.push({
                                     fromX: sx, fromY: sy,
@@ -670,7 +882,6 @@
                             });
                             processedRemoving.add(key);
                         } else {
-                            // Keeping: первая = spawn, остальные = split
                             assignments.forEach((a, i) => {
                                 if (i === 0) {
                                     const dir = a.target.x > sx ? 1 : -1;
@@ -690,12 +901,10 @@
                         }
                     });
                     
-                    // Убираемые, которые НЕ использованы — прячутся
                     removing.forEach(r => {
                         const key = `${Math.round(r.x)}_${Math.round(r.y)}`;
-                        if (processedRemoving.has(key)) return; // Уже обработана
+                        if (processedRemoving.has(key)) return;
                         
-                        // Не использована — едет к ближайшей keeping и прячется
                         let nearest = keeping[0];
                         let minDist = Infinity;
                         
@@ -746,14 +955,12 @@
                 
                 this.animations = this.animations.filter(a => a.position !== position);
                 
-                // HORIZONTAL анимация
                 if (this.animType === 'horizontal') {
                     const horizAnim = this.buildHorizontalAnimation(position, fromPoints, toPoints);
                     if (horizAnim) this.animations.push(horizAnim);
                     return;
                 }
                 
-                // СУЩЕСТВУЮЩИЕ АНИМАЦИИ (nearest / lurd) — БЕЗ ИЗМЕНЕНИЙ
                 let fromCoords;
                 if (!fromPoints || fromPoints.length === 0) {
                     if (this.animType === 'lurd') {
@@ -827,7 +1034,6 @@
                 const now = performance.now();
                 const activePositions = new Set(this.animations.map(a => a.position));
                 
-                // Статические точки
                 for (const [position, points] of Object.entries(this.currentPoints)) {
                     if (activePositions.has(position)) continue;
                     
@@ -840,13 +1046,10 @@
                     });
                 }
                 
-                // Анимации
                 this.animations = this.animations.filter(anim => {
                     const elapsed = now - anim.startTime;
                     const progress = Math.min(1, elapsed / anim.duration);
                     
-                    // HORIZONTAL анимация
-                    // HORIZONTAL анимация
                     if (anim.animType === 'horizontal' && anim.particles) {
                         anim.particles.forEach(p => {
                             const localProgress = Math.min(1, Math.max(0, 
@@ -873,7 +1076,6 @@
                         return progress < 1;
                     }
                     
-                    // СУЩЕСТВУЮЩИЕ АНИМАЦИИ (nearest / lurd) — БЕЗ ИЗМЕНЕНИЙ
                     const t = progress < 0.5 ? 4*progress**3 : 1 - (-2*progress + 2)**3 / 2;
                     const maxPoints = Math.max(anim.fromCoords.length, anim.toCoords.length);
                     const isLURD = anim.animType === 'lurd';
@@ -930,18 +1132,114 @@
         }
 
         // ============================================
-        // Main App
+        // Main App with Offline Support
         // ============================================
         const sound = new SoundSystem();
         const digitRenderer = new DigitRenderer();
         const display = new AnimatedDisplay('clockCanvas');
+        const localTimer = new LocalTimer();
+        
         let ws = null;
         let reconnectAttempts = 0;
         let currentState = 'stopped';
+        let clientId = null;
+        let isOnline = navigator.onLine;
+        let lastPhaseChange = null;
 
+        // Инициализация звука при первом взаимодействии
         document.addEventListener('click', () => {
             sound.init();
         }, { once: true });
+
+        // Отслеживание состояния сети
+        window.addEventListener('online', () => {
+            console.log('🌐 Online - синхронизация...');
+            isOnline = true;
+            updateConnectionIndicator('online');
+            connectWebSocket();
+        });
+
+        window.addEventListener('offline', () => {
+            console.log('📴 Offline - продолжаем работу локально');
+            isOnline = false;
+            updateConnectionIndicator('offline');
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        });
+
+        function updateConnectionIndicator(status) {
+            const indicator = document.getElementById('connectionIndicator');
+            if (status === 'online') {
+                indicator.textContent = '🟢 Онлайн';
+                indicator.className = 'connection-indicator online';
+                setTimeout(() => {
+                    indicator.className = 'connection-indicator';
+                }, 5000);
+            } else if (status === 'offline') {
+                indicator.textContent = '🔴 Офлайн (таймер работает)';
+                indicator.className = 'connection-indicator offline';
+            }
+        }
+
+        // Настройка локального таймера
+        localTimer.onUpdate = (timerData) => {
+            updateDisplay(timerData);
+        };
+
+        localTimer.onPhaseChange = (newState) => {
+            sound.playPhaseChangeSound();
+            showNotification(
+                newState === 'working' ? '🔔 Время работать!' : '🔔 Время отдыхать!'
+            );
+        };
+
+        function updateDisplay(data) {
+            const displayData = digitRenderer.getDisplay(data.minutes, data.seconds);
+            
+            if (data.state !== currentState) {
+                currentState = data.state;
+                display.setColorScheme(data.state);
+                updateProgressBarColor(display.getBarColor());
+            }
+            
+            display.updateDisplay(displayData, true);
+            
+            const statusEl = document.getElementById('status');
+            const modeEl = document.getElementById('modeIndicator');
+            const progressFill = document.getElementById('progressFill');
+            
+            const totalDuration = data.totalDuration || 1500;
+            const remaining = data.minutes * 60 + data.seconds;
+            const progress = Math.min(100, Math.max(0, ((totalDuration - remaining) / totalDuration) * 100));
+            progressFill.style.width = `${progress}%`;
+            
+            switch(data.state) {
+                case 'working':
+                    statusEl.textContent = '⚡ Работаем!';
+                    statusEl.className = 'status working';
+                    modeEl.textContent = 'Работа';
+                    break;
+                case 'break':
+                    statusEl.textContent = '☕ Перерыв';
+                    statusEl.className = 'status break';
+                    modeEl.textContent = 'Отдых';
+                    break;
+                case 'paused':
+                    statusEl.textContent = '⏸ Пауза';
+                    statusEl.className = 'status paused';
+                    break;
+                default:
+                    statusEl.textContent = 'Готов к работе';
+                    statusEl.className = 'status';
+                    modeEl.textContent = 'Работа';
+                    progressFill.style.width = '100%';
+            }
+            
+            document.getElementById('sessionCount').textContent = data.sessions || 0;
+            updateButtons(data.state);
+        }
 
         function updateProgressBarColor(color) {
             const progressFill = document.getElementById('progressFill');
@@ -949,77 +1247,73 @@
         }
 
         function connectWebSocket() {
-            ws = new WebSocket(`ws://${window.location.host}/ws`);
+            if (!isOnline) return;
+            if (ws && ws.readyState === WebSocket.OPEN) return;
+            
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
             
             ws.onopen = () => {
+                console.log('WebSocket connected');
                 reconnectAttempts = 0;
-                document.getElementById('status').textContent = 'Готов к работе';
-                document.getElementById('status').className = 'status';
-                updateButtons('stopped');
-                currentState = 'stopped';
-                display.setColorScheme('stopped');
-                updateProgressBarColor('#00ffcc');
+                updateConnectionIndicator('online');
+                
+                // Если таймер активен, синхронизируем состояние с сервером
+                if (localTimer.state !== 'stopped') {
+                    const localState = localTimer.getState();
+                    ws.send(JSON.stringify({
+                        action: 'sync',
+                        timer_state: localState
+                    }));
+                }
             };
             
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 
-                if (data.type === 'timer_update') {
-                    const displayData = digitRenderer.getDisplay(data.minutes, data.seconds);
-                    
-                    if (data.state !== currentState) {
-                        currentState = data.state;
-                        display.setColorScheme(data.state);
-                        updateProgressBarColor(display.getBarColor());
+                if (data.type === 'init') {
+                    clientId = data.client_id;
+                    // Если таймер не запущен локально, синхронизируемся с сервера
+                    if (localTimer.state === 'stopped') {
+                        if (data.timer_update && data.timer_update.state !== 'stopped') {
+                            localTimer.syncFromServer(data.timer_update);
+                        }
                     }
-                    
-                    display.updateDisplay(displayData, true);
-                    
-                    const statusEl = document.getElementById('status');
-                    const modeEl = document.getElementById('modeIndicator');
-                    const progressFill = document.getElementById('progressFill');
-                    
-                    const totalDuration = data.total_duration || 1500;
-                    const remaining = data.minutes * 60 + data.seconds;
-                    const progress = Math.min(100, Math.max(0, ((totalDuration - remaining) / totalDuration) * 100));
-                    progressFill.style.width = `${progress}%`;
-                    
-                    switch(data.state) {
-                        case 'working':
-                            statusEl.textContent = '⚡ Работаем!';
-                            statusEl.className = 'status working';
-                            modeEl.textContent = 'Работа';
-                            break;
-                        case 'break':
-                            statusEl.textContent = '☕ Перерыв';
-                            statusEl.className = 'status break';
-                            modeEl.textContent = 'Отдых';
-                            break;
-                        case 'paused':
-                            statusEl.textContent = '⏸ Пауза';
-                            statusEl.className = 'status paused';
-                            break;
-                        default:
-                            statusEl.textContent = 'Готов к работе';
-                            statusEl.className = 'status';
-                            modeEl.textContent = 'Работа';
-                            progressFill.style.width = '100%';
+                    updateDisplay(data.timer_update);
+                }
+                else if (data.type === 'timer_update') {
+                    // Обновляем локальный таймер с серверными данными
+                    if (localTimer.state === 'stopped' || 
+                        (data.phase_changed && localTimer.state === data.state)) {
+                        localTimer.syncFromServer(data);
                     }
-                    
-                    document.getElementById('sessionCount').textContent = data.sessions || 0;
-                    updateButtons(data.state);
+                    updateDisplay(data);
                     
                     if (data.phase_changed) {
                         sound.playPhaseChangeSound();
-                        showNotification(data.state === 'working' ? '🔔 Время работать!' : '🔔 Время отдыхать!');
+                        showNotification(
+                            data.state === 'working' ? '🔔 Время работать!' : '🔔 Время отдыхать!'
+                        );
+                    }
+                }
+                else if (data.type === 'sync_confirmed') {
+                    console.log('Синхронизация подтверждена сервером');
+                    if (data.server_state) {
+                        localTimer.syncFromServer(data.server_state);
                     }
                 }
             };
             
             ws.onclose = () => {
-                document.getElementById('status').textContent = 'Переподключение...';
-                document.getElementById('status').className = 'status paused';
-                setTimeout(connectWebSocket, Math.min(1000 * 2**reconnectAttempts++, 10000));
+                console.log('WebSocket disconnected');
+                ws = null;
+                if (isOnline) {
+                    setTimeout(connectWebSocket, Math.min(1000 * 2**reconnectAttempts++, 10000));
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
             };
         }
 
@@ -1034,17 +1328,45 @@
         }
 
         function sendCommand(action) {
+            // Всегда выполняем команду локально
+            switch(action) {
+                case 'start':
+                    localTimer.start();
+                    sound.playStartSound();
+                    break;
+                case 'pause':
+                    localTimer.pause();
+                    break;
+                case 'stop':
+                    localTimer.stop();
+                    sound.playStopSound();
+                    break;
+            }
+            
+            // Если онлайн, отправляем команду на сервер
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ action }));
-                if (action === 'start') sound.playStartSound();
-                else if (action === 'stop') sound.playStopSound();
+            } else if (isOnline) {
+                // Пытаемся переподключиться и отправить
+                connectWebSocket();
+                setTimeout(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ 
+                            action: 'sync',
+                            timer_state: localTimer.getState()
+                        }));
+                    }
+                }, 1000);
             }
         }
 
         function updateSettings() {
             const d = parseInt(document.getElementById('workDuration').value);
-            if (d >= 1 && d <= 60 && ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ action: 'set_duration', duration: d }));
+            if (d >= 1 && d <= 60) {
+                localTimer.setDuration(d);
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ action: 'set_duration', duration: d }));
+                }
             }
         }
 
@@ -1064,7 +1386,26 @@
             } else if (e.key === 'Escape') sendCommand('stop');
         });
 
-        connectWebSocket();
+        // Регистрация Service Worker
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js')
+                    .then((registration) => {
+                        console.log('Service Worker registered:', registration);
+                    })
+                    .catch((error) => {
+                        console.error('Service Worker registration failed:', error);
+                    });
+            });
+        }
+
+        // Запускаем приложение
+        if (isOnline) {
+            connectWebSocket();
+        } else {
+            updateConnectionIndicator('offline');
+            document.getElementById('status').textContent = 'Офлайн-режим';
+        }
     </script>
 </body>
 </html>
