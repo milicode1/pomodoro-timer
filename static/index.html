@@ -193,15 +193,12 @@
                 this.colon = this._createColon();
             }
             _createColon() {
-                // Матрица 5x11 для двоеточия (как цифра)
                 const matrix = [];
                 for (let y = 0; y < 11; y++) {
                     matrix[y] = [0, 0, 0, 0, 0];
                 }
-                // Верхняя точка: колонка 2, строки 2-3
                 matrix[2][2] = 1;
                 matrix[3][2] = 1;
-                // Нижняя точка: колонка 2, строки 7-8
                 matrix[7][2] = 1;
                 matrix[8][2] = 1;
                 return matrix;
@@ -392,11 +389,10 @@
                 
                 const canvasWidth = 650;
                 const canvasHeight = 220;
-                const digitWidth = 2.5 * this.scale;   // 70px
-                const digitHeight = 5.5 * this.scale;  // 154px
-                const colonWidth = 2.5 * this.scale;   // такая же ширина как цифра
+                const digitWidth = 2.5 * this.scale;
+                const digitHeight = 5.5 * this.scale;
+                const colonWidth = 2.5 * this.scale;
                 
-                // 4 цифры + двоеточие + 4 промежутка
                 const totalWidth = digitWidth * 4 + colonWidth + 20 * 4;
                 const startX = (canvasWidth - totalWidth) / 2;
                 const centerY = (canvasHeight - digitHeight) / 2 + 25;
@@ -409,12 +405,16 @@
                     seconds_ones: { x: startX + (digitWidth + 20) * 3 + colonWidth + 20, y: centerY }
                 };
                 
+                this.matrixWidth = 2.5 * this.scale;
+                this.matrixHeight = 5.5 * this.scale;
+                
                 this.currentPoints = {};
-                this.currentDigits = {};  // Храним digit для быстрого сравнения
-                this.colonPoints = digitRenderer.getColonCoords();  // Точки двоеточия
+                this.currentDigits = {};
+                this.colonPoints = digitRenderer.getColonCoords();
                 this.animations = [];
                 this.changeCount = 0;
                 this.animType = 'nearest';
+                this.animTypes = ['nearest', 'lurd', 'horizontal'];
                 
                 this.colorScheme = {
                     primary: '#00ffcc',
@@ -433,16 +433,14 @@
                 switch(mode) {
                     case 'working':
                         this.colorScheme = {
-                            //primary: '#ff2d1a',      // Ярко-красный неоновый
-                            primary: '#f9b159',      // оранжевый
+                            primary: '#f9b159',
                             glow: 'rgba(249, 177, 89, 0.7)',
                             bar: '#f9b159'
                         };
                         break;
                     case 'break':
                         this.colorScheme = {
-                            //primary: '#00e676',      // Ярко-зелёный неоновый
-                            primary: '#59f9b1',      // зелёный
+                            primary: '#59f9b1',
                             glow: 'rgba(89, 249, 177, 0.7)',
                             bar: '#59f9b1'
                         };
@@ -538,11 +536,204 @@
             }
             
             getCorners(pos) {
-                const matrixWidth = 2.5 * this.scale;
-                const matrixHeight = 5.5 * this.scale;
                 return {
                     topLeft: { x: pos.x, y: pos.y },
-                    bottomRight: { x: pos.x + matrixWidth, y: pos.y + matrixHeight }
+                    bottomRight: { x: pos.x + this.matrixWidth, y: pos.y + this.matrixHeight }
+                };
+            }
+            
+            // ============================================
+            // HORIZONTAL анимация (строго по Y-линиям)
+            // HORIZONTAL анимация (строго по Y-линиям) — ПОЛНОСТЬЮ ИСПРАВЛЕНО
+            // HORIZONTAL анимация — ИСПРАВЛЕНО РАСЩЕПЛЕНИЕ
+            buildHorizontalAnimation(position, oldPoints, newPoints) {
+                const pos = this.positions[position];
+                if (!pos) return null;
+                
+                const corners = this.getCorners(pos);
+                const oldCoords = (oldPoints || []).map(p => this.convertToCanvas(p, pos));
+                const newCoords = newPoints.map(p => this.convertToCanvas(p, pos));
+                
+                const getRow = (coord) => Math.round(coord.y);
+                
+                const oldByRow = {};
+                oldCoords.forEach(c => {
+                    const row = getRow(c);
+                    if (!oldByRow[row]) oldByRow[row] = [];
+                    oldByRow[row].push(c);
+                });
+                
+                const newByRow = {};
+                newCoords.forEach(c => {
+                    const row = getRow(c);
+                    if (!newByRow[row]) newByRow[row] = [];
+                    newByRow[row].push(c);
+                });
+                
+                const allRows = new Set([...Object.keys(oldByRow), ...Object.keys(newByRow)].map(Number));
+                const particles = [];
+                
+                allRows.forEach(row => {
+                    const oldInRow = oldByRow[row] || [];
+                    const newInRow = newByRow[row] || [];
+                    
+                    oldInRow.sort((a, b) => a.x - b.x);
+                    newInRow.sort((a, b) => a.x - b.x);
+                    
+                    const oldXSet = new Set(oldInRow.map(c => Math.round(c.x)));
+                    const newXSet = new Set(newInRow.map(c => Math.round(c.x)));
+                    
+                    const keeping = oldInRow.filter(c => newXSet.has(Math.round(c.x)));
+                    const removing = oldInRow.filter(c => !newXSet.has(Math.round(c.x)));
+                    const adding = newInRow.filter(c => !oldXSet.has(Math.round(c.x)));
+                    
+                    // Нет старых
+                    if (oldInRow.length === 0) {
+                        adding.forEach((target, i) => {
+                            particles.push({
+                                fromX: corners.topLeft.x - 30 - i * 25, fromY: target.y,
+                                toX: target.x, toY: target.y,
+                                alpha: 'in', delay: i * 80
+                            });
+                        });
+                        return;
+                    }
+                    
+                    // Нет новых
+                    if (newInRow.length === 0) {
+                        oldInRow.forEach((p, i) => {
+                            particles.push({
+                                fromX: p.x, fromY: p.y,
+                                toX: corners.bottomRight.x + 30, toY: p.y,
+                                alpha: 'out', delay: i * 40
+                            });
+                        });
+                        return;
+                    }
+                    
+                    // Сохраняемые стоят
+                    keeping.forEach(p => {
+                        particles.push({
+                            fromX: p.x, fromY: p.y,
+                            toX: p.x, toY: p.y,
+                            alpha: 'keep', delay: 0
+                        });
+                    });
+                    
+                    // ============================================
+                    // ПРАВИЛЬНОЕ РАСЩЕПЛЕНИЕ
+                    // ============================================
+                    
+                    // Считаем, сколько новых точек закреплено за каждой старой
+                    const oldAssignments = {}; // key -> [{target, isRemoving}]
+                    
+                    adding.forEach(target => {
+                        let nearest = null;
+                        let minDist = Infinity;
+                        let nearestIsRemoving = false;
+                        
+                        removing.forEach(r => {
+                            const dist = Math.abs(r.x - target.x);
+                            if (dist < minDist) { minDist = dist; nearest = r; nearestIsRemoving = true; }
+                        });
+                        
+                        keeping.forEach(k => {
+                            const dist = Math.abs(k.x - target.x);
+                            if (dist < minDist) { minDist = dist; nearest = k; nearestIsRemoving = false; }
+                        });
+                        
+                        if (nearest) {
+                            const key = `${Math.round(nearest.x)}_${Math.round(nearest.y)}`;
+                            if (!oldAssignments[key]) oldAssignments[key] = [];
+                            oldAssignments[key].push({ target, isRemoving: nearestIsRemoving });
+                        }
+                    });
+                    
+                    // Обрабатываем каждую старую точку
+                    const processedRemoving = new Set();
+                    
+                    Object.entries(oldAssignments).forEach(([key, assignments]) => {
+                        const [sx, sy] = key.split('_').map(Number);
+                        const isRemoving = assignments[0].isRemoving;
+                        const count = assignments.length;
+                        
+                        if (isRemoving) {
+                            // Удаляемая точка: первая назначенная = оригинал переезжает
+                            // Остальные = расщепление (копии)
+                            assignments.forEach((a, i) => {
+                                particles.push({
+                                    fromX: sx, fromY: sy,
+                                    toX: a.target.x, toY: a.target.y,
+                                    alpha: i === 0 ? 'move' : 'split',
+                                    delay: i * 40
+                                });
+                            });
+                            processedRemoving.add(key);
+                        } else {
+                            // Keeping: первая = spawn, остальные = split
+                            assignments.forEach((a, i) => {
+                                if (i === 0) {
+                                    const dir = a.target.x > sx ? 1 : -1;
+                                    particles.push({
+                                        fromX: sx + dir * 5, fromY: sy,
+                                        toX: a.target.x, toY: a.target.y,
+                                        alpha: 'spawn', delay: 60
+                                    });
+                                } else {
+                                    particles.push({
+                                        fromX: sx, fromY: sy,
+                                        toX: a.target.x, toY: a.target.y,
+                                        alpha: 'split', delay: i * 40
+                                    });
+                                }
+                            });
+                        }
+                    });
+                    
+                    // Убираемые, которые НЕ использованы — прячутся
+                    removing.forEach(r => {
+                        const key = `${Math.round(r.x)}_${Math.round(r.y)}`;
+                        if (processedRemoving.has(key)) return; // Уже обработана
+                        
+                        // Не использована — едет к ближайшей keeping и прячется
+                        let nearest = keeping[0];
+                        let minDist = Infinity;
+                        
+                        keeping.forEach(k => {
+                            const dist = Math.abs(k.x - r.x);
+                            if (dist < minDist) { minDist = dist; nearest = k; }
+                        });
+                        
+                        if (!nearest && adding.length > 0) {
+                            adding.forEach(a => {
+                                const dist = Math.abs(a.x - r.x);
+                                if (dist < minDist) { minDist = dist; nearest = a; }
+                            });
+                        }
+                        
+                        if (nearest) {
+                            particles.push({
+                                fromX: r.x, fromY: r.y,
+                                toX: nearest.x, toY: nearest.y,
+                                alpha: 'hide', delay: 0
+                            });
+                        } else {
+                            particles.push({
+                                fromX: r.x, fromY: r.y,
+                                toX: corners.bottomRight.x + 30, toY: r.y,
+                                alpha: 'out', delay: 0
+                            });
+                        }
+                    });
+                });
+                
+                return {
+                    position,
+                    particles,
+                    corners,
+                    startTime: performance.now(),
+                    duration: 600,
+                    animType: 'horizontal'
                 };
             }
             
@@ -553,6 +744,16 @@
                 const toCoords = toPoints.map(p => this.convertToCanvas(p, pos));
                 const corners = this.getCorners(pos);
                 
+                this.animations = this.animations.filter(a => a.position !== position);
+                
+                // HORIZONTAL анимация
+                if (this.animType === 'horizontal') {
+                    const horizAnim = this.buildHorizontalAnimation(position, fromPoints, toPoints);
+                    if (horizAnim) this.animations.push(horizAnim);
+                    return;
+                }
+                
+                // СУЩЕСТВУЮЩИЕ АНИМАЦИИ (nearest / lurd) — БЕЗ ИЗМЕНЕНИЙ
                 let fromCoords;
                 if (!fromPoints || fromPoints.length === 0) {
                     if (this.animType === 'lurd') {
@@ -572,7 +773,6 @@
                     fromCoords = fromPoints.map(p => this.convertToCanvas(p, pos));
                 }
                 
-                this.animations = this.animations.filter(a => a.position !== position);
                 this.animations.push({
                     position,
                     fromCoords,
@@ -594,7 +794,6 @@
                     const newPoints = data.points || [];
                     
                     if (animate && this.currentPoints[position]) {
-                        // Сравниваем digit (число), а не массивы точек через JSON
                         if (this.currentDigits[position] !== newDigit) {
                             hasChanges = true;
                             this.animateTransition(
@@ -613,7 +812,8 @@
                     this.changeCount++;
                     if (this.changeCount >= 3) {
                         this.changeCount = 0;
-                        this.animType = this.animType === 'nearest' ? 'lurd' : 'nearest';
+                        const idx = this.animTypes.indexOf(this.animType);
+                        this.animType = this.animTypes[(idx + 1) % this.animTypes.length];
                     }
                 }
                 
@@ -627,6 +827,7 @@
                 const now = performance.now();
                 const activePositions = new Set(this.animations.map(a => a.position));
                 
+                // Статические точки
                 for (const [position, points] of Object.entries(this.currentPoints)) {
                     if (activePositions.has(position)) continue;
                     
@@ -639,11 +840,41 @@
                     });
                 }
                 
+                // Анимации
                 this.animations = this.animations.filter(anim => {
                     const elapsed = now - anim.startTime;
                     const progress = Math.min(1, elapsed / anim.duration);
-                    const t = progress < 0.5 ? 4*progress**3 : 1 - (-2*progress + 2)**3 / 2;
                     
+                    // HORIZONTAL анимация
+                    // HORIZONTAL анимация
+                    if (anim.animType === 'horizontal' && anim.particles) {
+                        anim.particles.forEach(p => {
+                            const localProgress = Math.min(1, Math.max(0, 
+                                (progress - p.delay / anim.duration) / ((anim.duration - p.delay) / anim.duration || 1)
+                            ));
+                            const t = localProgress < 0.5 ? 2*localProgress*localProgress : 1 - (-2*localProgress + 2)**2 / 2;
+                            const x = p.fromX + (p.toX - p.fromX) * t;
+                            const y = p.fromY + (p.toY - p.fromY) * t;
+                            
+                            let alpha;
+                            switch(p.alpha) {
+                                case 'out':   alpha = 1 - localProgress; break;
+                                case 'in':    alpha = Math.min(1, localProgress * 2); break;
+                                case 'move':  alpha = 1; break;
+                                case 'split': alpha = Math.min(1, localProgress * 2); break;
+                                case 'spawn': alpha = Math.min(1, localProgress * 1.5); break;
+                                case 'hide':  alpha = 1 - localProgress; break;
+                                case 'keep':  alpha = 1; break;
+                                default:      alpha = 1;
+                            }
+                            
+                            if (alpha > 0.01) this.drawPoint(x, y, alpha);
+                        });
+                        return progress < 1;
+                    }
+                    
+                    // СУЩЕСТВУЮЩИЕ АНИМАЦИИ (nearest / lurd) — БЕЗ ИЗМЕНЕНИЙ
+                    const t = progress < 0.5 ? 4*progress**3 : 1 - (-2*progress + 2)**3 / 2;
                     const maxPoints = Math.max(anim.fromCoords.length, anim.toCoords.length);
                     const isLURD = anim.animType === 'lurd';
                     
@@ -706,13 +937,12 @@
         const display = new AnimatedDisplay('clockCanvas');
         let ws = null;
         let reconnectAttempts = 0;
-        let currentState = 'stopped';  // Отслеживаем состояние
+        let currentState = 'stopped';
 
         document.addEventListener('click', () => {
             sound.init();
         }, { once: true });
 
-        // Функция обновления цвета прогресс-бара
         function updateProgressBarColor(color) {
             const progressFill = document.getElementById('progressFill');
             progressFill.style.background = `linear-gradient(90deg, ${color}, ${color}88)`;
@@ -749,7 +979,6 @@
                     const modeEl = document.getElementById('modeIndicator');
                     const progressFill = document.getElementById('progressFill');
                     
-                    // Используем total_duration с сервера
                     const totalDuration = data.total_duration || 1500;
                     const remaining = data.minutes * 60 + data.seconds;
                     const progress = Math.min(100, Math.max(0, ((totalDuration - remaining) / totalDuration) * 100));
